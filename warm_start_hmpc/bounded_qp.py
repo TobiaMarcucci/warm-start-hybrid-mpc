@@ -166,8 +166,13 @@ class BoundedQP(grb.Model):
             New value of the right-hand side.
         '''
 
+        # check input size
+        c = self.get_constraints(name)
+        if c.size != rhs.size:
+            raise ValueError('The rhs does not have the right dimension.')
+
         # reset rhs one by one
-        for i, ci in enumerate(self.get_constraints(name)):
+        for i, ci in enumerate(c):
             ci.RHS = rhs[i]
 
         # update model to see modifications

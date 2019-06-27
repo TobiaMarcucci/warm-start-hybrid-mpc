@@ -92,6 +92,9 @@ class TestBoundedQP(unittest.TestCase):
             qp.set_constraint_rhs(op[1], 2*b)
             np.testing.assert_array_equal(2*b, qp.get_constraint_rhs(op[1]))
 
+            # wrong size rhs
+            self.assertRaises(ValueError, qp.set_constraint_rhs, op[1], np.ones(2*n))
+
         # returns empty vector if variable is not defined
         d = qp.get_variables('d')
         self.assertEqual(d.size, 0)
