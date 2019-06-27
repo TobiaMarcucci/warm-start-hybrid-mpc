@@ -2,6 +2,9 @@
 import numpy as np
 import sympy as sp
 
+# internal inputs
+from warm_start_hmpc.utils import sym2mat, unpack_bmat
+
 class MLDSystem(object):
     '''
     Discrete-time Mixed Logical Dynamical (MLD) system in the form
@@ -26,15 +29,15 @@ class MLDSystem(object):
             Number of binary inputs.
         '''
 
-        # store sizes of the system
-        self.nx = A.shape[1]
-        self.nu = B.shape[1]
-        self.nub = nub
-        self.nuc = self.nu - nub
-
         # store matrices
         [self.A, self.B] = dynamics
         [self.F, self.G, self.h] = constraints
+
+        # store sizes of the system
+        self.nx = self.A.shape[1]
+        self.nu = self.B.shape[1]
+        self.nub = nub
+        self.nuc = self.nu - nub
 
         # selection matrix for the binaries
         self.V = np.hstack((np.zeros((nub, self.nuc)), np.eye(nub)))
@@ -54,9 +57,9 @@ class MLDSystem(object):
             raise ValueError('A and B matrices have incompatible size.')
 
         # check constraints
-        if self.F.shape != [self.h.size, self.nx]:
+        if self.F.shape != (self.h.size, self.nx):
             raise ValueError('Matrix F has incompatible size.')
-        if self.G.shape != [self.h.size, self.nu]:
+        if self.G.shape != (self.h.size, self.nu):
             raise ValueError('Matrix G has incompatible size.')
 
     @staticmethod
@@ -70,7 +73,7 @@ class MLDSystem(object):
             Symbolic value of the next state (linear function of x and u).
         constraints : sympy matrix of sympy symbolic affine expressions
             Symbolic constraints in the form constraints <= 0.
-            Hence, constraints = F x + G u - l.
+            Hence, constraints = F x + G u - h.
         x : sympy matrix
             Symbolic state of the system.
         u : sympy matrix
@@ -101,4 +104,4 @@ class MLDSystem(object):
         constraints = [F, G, -offest]
 
         # construct MLD system
-        return MLDSystem(dynamics, constraints, num)
+        return MLDSystem(dynamics, constraints, nub)
