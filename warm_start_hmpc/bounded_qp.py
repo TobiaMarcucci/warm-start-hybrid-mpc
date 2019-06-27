@@ -154,6 +154,37 @@ class BoundedQP(grb.Model):
 
         return c
 
+    def set_constraint_rhs(self, name, rhs):
+        '''
+        Sets the right-hand side of a constraint to the given value.
+
+        Parameters
+        ----------
+        name : string
+            Name of the family of constraints of wich we want to reset the rhs.
+        rhs : np.array
+            New value of the right-hand side.
+        '''
+
+        # reset rhs one by one
+        for i, ci in enumerate(self.get_constraints(name)):
+            ci.RHS = rhs[i]
+
+        # update model to see modifications
+        self.update()
+
+    def get_constraint_rhs(self, name):
+        '''
+        Gets the right-hand side of a constraint.
+
+        Parameters
+        ----------
+        name : string
+            Name of the family of constraints of wich we want to get the rhs.
+        '''
+
+        return np.array([ci.RHS for ci in self.get_constraints(name)])
+
     def optimize(self):
         '''
         Overloads the grb.Model method.

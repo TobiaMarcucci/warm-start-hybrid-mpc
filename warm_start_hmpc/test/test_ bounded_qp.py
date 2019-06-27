@@ -88,6 +88,10 @@ class TestBoundedQP(unittest.TestCase):
             for i, ci in enumerate(qp.get_constraints(op[1])):
                 self.assertTrue(c[i].sameAs(ci))
 
+            # change rhs
+            qp.set_constraint_rhs(op[1], 2*b)
+            np.testing.assert_array_equal(2*b, qp.get_constraint_rhs(op[1]))
+
         # returns empty vector if variable is not defined
         d = qp.get_variables('d')
         self.assertEqual(d.size, 0)
