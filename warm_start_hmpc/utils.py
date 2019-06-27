@@ -5,8 +5,8 @@ def sym2mat(x, expr):
     '''
     Extracts from the symbolic affine expression the matrices such that expr(x) = A x + b.
 
-    Arguments
-    ---------
+    Parameters
+    ----------
     x : sympy matrix of sympy symbols
         Variables of the affine expression.
     expr : sympy matrix of sympy symbolic affine expressions
@@ -32,8 +32,8 @@ def unpack_bmat(A, indices, direction):
     '''
     Unpacks a matrix in blocks.
 
-    Arguments
-    ---------
+    Parameters
+    ----------
     A : np.array
         Matrix to be unpacked.
     indices : list of int
