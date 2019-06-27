@@ -3,5 +3,4 @@
 *.dot
 *.pdf
 gurobi.log
-.DS_Store
 .ipynb_checkpoints
