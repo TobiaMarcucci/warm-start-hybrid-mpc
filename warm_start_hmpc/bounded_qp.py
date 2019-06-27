@@ -156,7 +156,7 @@ class BoundedQP(grb.Model):
 
     def optimize(self):
         '''
-        Solves the optimization problem.
+        Overloads the grb.Model method.
         If the problem is infeasible, retrieves a Farkas' proof solving a linear program.
         After using this method, if the problem is infeasible, it is possible to retrive the variables FarkasDual in the gurobi constraint class.
         '''
@@ -180,7 +180,7 @@ class BoundedQP(grb.Model):
 
             # ensure new problem is actually infeasible
             if self.status != 3:
-                raise ValueError('The problem seems to be unbounded.')
+                raise AssertionError('The problem seems to be unbounded.')
 
             # reset quadratic objective
             self.setObjective(obj)
@@ -188,6 +188,10 @@ class BoundedQP(grb.Model):
     def get_primal_optimizer(self, name):
         '''
         Gets the optimal value of a set of primal variables and returns them in a numpy array.
+        Raises a RuntimeError if the problem has not been solved yet.
+        Returns the optimal primal variables if the problem is solved to optimality.
+        Returns None if the problem is infeasible.
+        Note that, because of the optimize method, no other options are possible.
 
         Parameters
         ----------
@@ -202,15 +206,12 @@ class BoundedQP(grb.Model):
             Returns None if infeasible.
         '''
 
-        # check that problem has been solved
-        if self.status == 1:
-            raise ValueError('Problem not solved yet.')
-
         # if optimal, return optimizer
-        elif self.status == 2:
+        self.__if_not_solved()
+        if self.status == 2:
             return np.array([xi.x for xi in self.get_variables(name)])
 
-        # if infeasible (or others)
+        # if infeasible
         else:
             return None
 
@@ -218,7 +219,11 @@ class BoundedQP(grb.Model):
         '''
         Gets the optimal value of a set of dual variables and returns them in a numpy array.
         Multipliers are positive for inequalities with sense '<', and negative with sense '>'.
-
+        Raises a RuntimeError if the problem has not been solved yet.
+        Returns the optimal dual variables if the problem is solved to optimality.
+        Returns None if the problem is infeasible.
+        Note that, because of the optimize method, no other options are possible.
+        
         Parameters
         ----------
         name : string
@@ -232,15 +237,40 @@ class BoundedQP(grb.Model):
             Returns the Farkas dual if the problem is certified to be infeasible.
         '''
 
-        # check that problem has been solved
-        if self.status == 1:
-            raise ValueError('Problem not solved yet.')
-
         # if optimal, return optimizer
-        elif self.status == 2:
+        self.__if_not_solved()
+        if self.status == 2:
             return - np.array([ci.Pi for ci in self.get_constraints(name)])
 
         # if certified infeasible, return Farkas dual
         # note that Gurobi Pi and FarkasDual of opposite sign!
         else:
             return np.array([ci.FarkasDual for ci in self.get_constraints(name)])
+
+    @property
+    def objVal(self):
+        '''
+        Overloads the grb.Model attribute.
+        Raises a RuntimeError if the problem has not been solved yet.
+        Returns the optimal value if the problem is solved to optimality.
+        Returns None if the problem is infeasible.
+        Note that, because of the optimize method, no other options are possible.
+        '''
+
+        # if optimal, return optimal value
+        self.__if_not_solved()
+        if self.status == 2:
+            return super(BoundedQP, self).objVal
+
+        # if infeasible
+        else:
+            return None
+
+    def __if_not_solved(self):
+        '''
+        Raises an RuntimeError error if the problem has not been solved yet.
+        '''
+
+        # if status is loaded only
+        if self.status == 1:
+            raise RuntimeError('Problem not solved yet.')
