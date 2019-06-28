@@ -290,7 +290,7 @@ class BoundedQP(grb.Model):
         '''
         Returns the optimal value of the primal problem.
         This is the optimal value of the problem if feasible.
-        Returns None if the problem is infeasible.
+        Returns inf if the problem is infeasible.
 
         Returns
         -------
@@ -305,7 +305,7 @@ class BoundedQP(grb.Model):
 
         # if infeasible
         else:
-            return None
+            return np.inf
 
     def dual_objective(self):
         '''

@@ -185,7 +185,7 @@ class TestBoundedQP(unittest.TestCase):
         np.testing.assert_array_equal(p, - q)
 
         # check optimal value
-        self.assertIsNone(qp.primal_objective())
+        self.assertTrue(np.isinf(qp.primal_objective()))
         obj = - a.dot(p) - b.dot(q)
         self.assertEqual(qp.dual_objective(), obj)
 

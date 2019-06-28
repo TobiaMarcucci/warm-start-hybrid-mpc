@@ -38,21 +38,21 @@ class SubproblemSolution(object):
 
         return SubproblemSolution(primal, dual, integer_feasible)
 
-    def objective_lower_bound(self):
+    # def objective_lower_bound(self):
 
-        # if dual has not been solved yet
-        if self.dual is None:
-            return - np.inf
+    #     # if dual has not been solved yet
+    #     if self.dual is None:
+    #         return - np.inf
 
-        return self.dual.objective
+    #     return self.dual.objective
 
-    def feasible(self):
+    # def feasible(self):
 
-        # if primal has not been solved yet
-        if self.primal is None:
-            return None
+    #     # if primal has not been solved yet
+    #     if self.primal is None:
+    #         return None
 
-        return not np.isinf(self.primal.objective)
+    #     return not np.isinf(self.primal.objective)
 
 class PrimalFeasibleSolution(object):
     '''

@@ -256,7 +256,7 @@ class HybridModelPredictiveController(object):
         # generate a solver for the branch and bound algorithm
         def solver(identifier):
             solution = self._solve_subproblem(x0, identifier)
-            return solution.feasible(), solution.integer_feasible, solution.primal.objective, solution
+            return solution.integer_feasible, solution.primal.objective, solution
 
         # solve the mixed integer program using branch and bound
         return branch_and_bound(
