@@ -61,10 +61,8 @@ class PrimalFeasibleSolution(object):
 
     def __init__(self, variables, objective):
 
-        # # store primal variables
-        # self.variables = variables
-
         # store primal variables
+        self.variables = variables
         self.x = variables['x']
         self.uc = variables['uc']
         self.ub = variables['ub']
@@ -106,10 +104,8 @@ class DualFeasibleSolution(object):
 
     def __init__(self, variables, objective):
 
-        # # store dual variables
-        # self.variables = variables
-
         # store dual variables
+        self.variables = variables
         self.lam = variables['lam']
         self.mu = variables['mu']
         self.nu_lb = variables['nu_lb']
