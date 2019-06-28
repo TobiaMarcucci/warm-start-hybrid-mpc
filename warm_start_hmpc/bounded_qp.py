@@ -33,10 +33,13 @@ class BoundedQP(grb.Model):
             Numpy array that collects the new optimization variables.
         '''
 
-        # change the default lower bound to -inf
-        # since by default gurobi uses 0
-        if not kwargs.has_key('lb'):
-            kwargs['lb'] = [-grb.GRB.INFINITY]*n
+        # prevent from setting bounds here
+        # otherwise retrieving the multipliers for the Farkas proof is impossible (?)
+        if kwargs.has_key('lb') or kwargs.has_key('ub'):
+            raise KeyError('Cannot set bounds with add_variables, use add_constraints instead.')
+
+        # change the default lower bound to -inf, gurobi uses 0 by default
+        kwargs['lb'] = [-grb.GRB.INFINITY]*n
 
         # add variables to the optimization problem
         x = self.addVars(n, **kwargs)
@@ -221,7 +224,7 @@ class BoundedQP(grb.Model):
             # reset quadratic objective
             self.setObjective(obj)
 
-    def get_primal_optimizer(self, name):
+    def primal_optimizer(self, name):
         '''
         Gets the optimal value of a set of primal variables and returns them in a numpy array.
         Raises a RuntimeError if the problem has not been solved yet.
@@ -243,7 +246,7 @@ class BoundedQP(grb.Model):
         '''
 
         # if optimal, return optimizer
-        self.__if_not_solved()
+        self._throw_if_not_solved()
         if self.status == 2:
             return np.array([xi.x for xi in self.get_variables(name)])
 
@@ -251,7 +254,7 @@ class BoundedQP(grb.Model):
         else:
             return None
 
-    def get_dual_optimizer(self, name):
+    def dual_optimizer(self, name):
         '''
         Gets the optimal value of a set of dual variables and returns them in a numpy array.
         Multipliers are positive for inequalities with sense '<', and negative with sense '>'.
@@ -274,7 +277,7 @@ class BoundedQP(grb.Model):
         '''
 
         # if optimal, return optimizer
-        self.__if_not_solved()
+        self._throw_if_not_solved()
         if self.status == 2:
             return - np.array([ci.Pi for ci in self.get_constraints(name)])
 
@@ -283,26 +286,49 @@ class BoundedQP(grb.Model):
         else:
             return np.array([ci.FarkasDual for ci in self.get_constraints(name)])
 
-    @property
-    def objVal(self):
+    def primal_objective(self):
         '''
-        Overloads the grb.Model attribute.
-        Raises a RuntimeError if the problem has not been solved yet.
-        Returns the optimal value if the problem is solved to optimality.
+        Returns the optimal value of the primal problem.
+        This is the optimal value of the problem if feasible.
         Returns None if the problem is infeasible.
-        Note that, because of the optimize method, no other options are possible.
+
+        Returns
+        -------
+        float or None
+            Primal objective.
         '''
 
         # if optimal, return optimal value
-        self.__if_not_solved()
+        self._throw_if_not_solved()
         if self.status == 2:
-            return super(BoundedQP, self).objVal
+            return self.objVal
 
         # if infeasible
         else:
             return None
 
-    def __if_not_solved(self):
+    def dual_objective(self):
+        '''
+        Returns the optimal value of the dual problem.
+        This is the optimal value of the problem if feasible.
+        This is the objective of the Farkas proof if infeasible.
+
+        Returns
+        -------
+        float
+            Dual objective.
+        '''
+        
+        # if optimal, return optimal value
+        self._throw_if_not_solved()
+        if self.status == 2:
+            return self.objVal
+
+        # if infeasible, return cost of Farkas' proof
+        else:
+            return - sum(c.RHS*c.FarkasDual for c in self.getConstrs())
+
+    def _throw_if_not_solved(self):
         '''
         Raises an RuntimeError error if the problem has not been solved yet.
         '''

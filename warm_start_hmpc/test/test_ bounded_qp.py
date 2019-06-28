@@ -29,19 +29,17 @@ class TestBoundedQP(unittest.TestCase):
             # check that the lower bound is -inf
             self.assertEqual(xi.LB, -grb.GRB.INFINITY)
 
-        # try to set a different lower bound
-        lb = [5.] * n
-        y = qp.add_variables(n, name='y', lb=lb)
-        for yi in y:
-            self.assertEqual(yi.LB, 5)
-
         # get variables back
         for i, xi in enumerate(qp.get_variables('x')):
             self.assertTrue(x[i].sameAs(xi))
 
+        # try to set a bound
+        b = [0.] * n
+        self.assertRaises(KeyError, qp.add_variables, n, lb=b)
+        self.assertRaises(KeyError, qp.add_variables, n, ub=b)
+
         # returns empty vector if variable is not defined
-        z = qp.get_variables('z')
-        self.assertEqual(z.size, 0)
+        self.assertEqual(qp.get_variables('y').size, 0)
 
     def test_constraints(self):
 
@@ -96,12 +94,10 @@ class TestBoundedQP(unittest.TestCase):
             self.assertRaises(ValueError, qp.set_constraint_rhs, op[1], np.ones(2*n))
 
         # returns empty vector if variable is not defined
-        d = qp.get_variables('d')
-        self.assertEqual(d.size, 0)
+        self.assertEqual(qp.get_constraints('d').size, 0)
 
         # raise error if incoherent sizes
-        b_wrong = np.ones(n+1)
-        self.assertRaises(ValueError, qp.add_constraints, x, eq, b_wrong)
+        self.assertRaises(ValueError, qp.add_constraints, x, eq, np.ones(n+1))
 
         # raise error if lhs is array of floats
         self.assertRaises(ValueError, qp.add_constraints, b, le, x)
@@ -123,36 +119,40 @@ class TestBoundedQP(unittest.TestCase):
         qp.setObjective(.5 * x.dot(x))
 
         # no solution available yet
-        self.assertRaises(RuntimeError, qp.get_primal_optimizer, 'x')
-        self.assertRaises(RuntimeError, qp.get_dual_optimizer, 'c1')
+        self.assertRaises(RuntimeError, qp.primal_optimizer, 'x')
+        self.assertRaises(RuntimeError, qp.dual_optimizer, 'c1')
 
         # check primal optimizer
         qp.optimize()
-        x_found = qp.get_primal_optimizer('x')
-        x_opt = lb
-        np.testing.assert_array_almost_equal(x_found, x_opt)
+        np.testing.assert_array_equal(qp.primal_optimizer('x'), lb)
 
         # check dual optimizer
-        p_found = qp.get_dual_optimizer('c1')
-        p_opt = [-1.] * n
-        np.testing.assert_array_almost_equal(p_found, p_opt)
+        np.testing.assert_array_almost_equal(qp.dual_optimizer('c1'), [-1.]*n)
 
-        # check optimal value
-        self.assertEqual(qp.objVal, .5*lb.dot(lb))
+        # check optimal value`
+        self.assertEqual(qp.primal_objective(), .5*lb.dot(lb))
+        self.assertEqual(qp.dual_objective(), .5*lb.dot(lb))
 
         # check sign multipliers with opposite sense (le -> positive)
         qp.add_constraints([x[1]+2.], le, [x[0]], name='c2')
         qp.optimize()
-        p_found = qp.get_dual_optimizer('c2')
-        self.assertTrue(p_found > 0.)
+        self.assertTrue(qp.dual_optimizer('c2') > 0.)
 
         # check sign multipliers with opposite sense (ge -> negative)
         qp.add_constraints([x[0]], ge, [x[1]+3.], name='c3')
         qp.optimize()
-        p_found = qp.get_dual_optimizer('c3')
-        self.assertTrue(p_found < 0.)
+        self.assertTrue(qp.dual_optimizer('c3') < 0.)
 
     def test_optimize_infeasible(self):
+        '''
+        Consider a < 0 and b > 0.
+        Primal QP: min |x|^2 s.t. x <= a, x >= b.
+        Primal LP: min 0 s.t. x <= a, x >= b.
+        Lagrangian: L = p'(x - a) + q'(x - b).
+        Dual LP: max - a'p - b'q s.t. p + q = 0, p >= 0, q <= 0.
+        Farkas proof: any vectors p = - q > 0.
+        '''
+        np.random.seed(1)
 
         # initialize model
         qp = BoundedQP()
@@ -162,26 +162,32 @@ class TestBoundedQP(unittest.TestCase):
         x = qp.add_variables(n, name='x')
 
         # set objective
-        qp.setObjective(x[0]*x[0])
+        qp.setObjective(x.dot(x))
 
         # add infeasible constraints
-        qp.add_constraints(x, ge, [1.]*n, name='c1')
-        qp.add_constraints(x, le, [0.]*n, name='c2')
+        a = - np.random.rand(n)
+        b = np.random.rand(n)
+        qp.add_constraints(x, le, a, name='p')
+        qp.add_constraints(x, ge, b, name='q') 
         qp.optimize()
 
         # primal None if infeasible
-        x_found = qp.get_primal_optimizer('x')
+        x_found = qp.primal_optimizer('x')
         self.assertIsNone(x_found)
 
         # check signs farkas proof
-        p1_found = qp.get_dual_optimizer('c1')
-        p2_found = qp.get_dual_optimizer('c2')
-        self.assertTrue(max(p1_found) <= 0.)
-        self.assertTrue(min(p2_found) >= 0.)
-        np.testing.assert_array_almost_equal(p1_found, -p2_found)
+        p = qp.dual_optimizer('p')
+        q = qp.dual_optimizer('q')
+        self.assertTrue(max(p) > 0.)
+        self.assertTrue(min(p) >= 0.)
+        self.assertTrue(min(q) < 0.)
+        self.assertTrue(max(q) <= 0.)
+        np.testing.assert_array_equal(p, - q)
 
         # check optimal value
-        self.assertIsNone(qp.objVal)
+        self.assertIsNone(qp.primal_objective())
+        obj = - a.dot(p) - b.dot(q)
+        self.assertEqual(qp.dual_objective(), obj)
 
     def test_optimize_unbounded(self):
 
