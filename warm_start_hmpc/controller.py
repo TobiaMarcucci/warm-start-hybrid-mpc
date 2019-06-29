@@ -5,9 +5,9 @@ from copy import copy, deepcopy
 from operator import le, ge, eq
 
 # internal inputs
-from bounded_qp import BoundedQP
-from subproblem_solution import SubproblemSolution
-from pympc.control.hybrid_benchmark.branch_and_bound import Node, branch_and_bound, best_first
+from warm_start_hmpc.bounded_qp import BoundedQP
+from warm_start_hmpc.subproblem_solution import SubproblemSolution
+from warm_start_hmpc.branch_and_bound import Node, branch_and_bound, best_first, depth_first
 
 class HybridModelPredictiveController(object):
     '''
@@ -91,7 +91,7 @@ class HybridModelPredictiveController(object):
 
         # initial state (initialized to zero)
         x_next = qp.add_variables(self.mld.nx, name='x_0')
-        qp.add_linear_constraints(x_next, eq, [0.]*self.mld.nx, name='lam_0')
+        qp.add_constraints(x_next, eq, [0.]*self.mld.nx, name='lam_0')
 
         # loop over the time horizon
         for t in range(self.T):
@@ -107,20 +107,20 @@ class HybridModelPredictiveController(object):
             # inequalities must be stated as expr <= num to get negative duals
             # note that num <= expr would be modified to expr => num
             # and would give positive duals
-            qp.add_linear_constraints(-ub, le, [0.]*self.mld.nub, name='nu_b_%d'%t)
-            qp.add_linear_constraints(ub, le, [1.]*self.mld.nub, name='nu_ub_%d'%t)
+            qp.add_constraints(-ub, le, [0.]*self.mld.nub, name='nu_lb_%d'%t)
+            qp.add_constraints(ub, le, [1.]*self.mld.nub, name='nu_ub_%d'%t)
 
             # mld dynamics
-            qp.add_linear_constraints(
+            qp.add_constraints(
                 x_next,
                 eq,
-                self.mld.A.dot(x) + self.mld.Buc.dot(u),
+                self.mld.A.dot(x) + self.mld.B.dot(u),
                 name='lam_%d'%(t+1)
                 )
 
             # mld stage constraints
             if t < self.T-1:
-                qp.add_linear_constraints(
+                qp.add_constraints(
                     self.mld.F.dot(x) + self.mld.G.dot(u),
                     le,
                     self.mld.h,
@@ -129,7 +129,7 @@ class HybridModelPredictiveController(object):
             
             # mld constraint + terminal constraint
             else:
-                qp.add_linear_constraints(
+                qp.add_constraints(
                     self.F_Tm1.dot(x) + self.G_Tm1.dot(u),
                     le,
                     self.h_Tm1,
@@ -158,14 +158,14 @@ class HybridModelPredictiveController(object):
 
         # initialize LP, optimization variables, and objective
         lp = BoundedQP()
-        mu = lp.add_variables(n)
+        mu = lp.add_variables(n, name='mu')
         obj = lp.setObjective(self.mld.h.dot(mu))
         update_mu = []
 
         # initialize constraints
-        lp.add_linear_constraints(self.mld.F.T.dot(mu), eq, [0.]*self.mld.nx, name='x')
-        lp.add_linear_constraints(self.mld.G.T.dot(mu), eq, [0.]*self.mld.nu, name='u')
-        lp.add_linear_constraints(mu, ge, [0.]*n)
+        lp.add_constraints(self.mld.F.T.dot(mu), eq, [0.]*self.mld.nx, name='x')
+        lp.add_constraints(self.mld.G.T.dot(mu), eq, [0.]*self.mld.nu, name='u')
+        lp.add_constraints(mu, ge, [0.]*n)
 
         # loop thorugh the columns of the rhs
         for i in range(m):
@@ -176,9 +176,9 @@ class HybridModelPredictiveController(object):
 
             # get columnn of M
             lp.optimize()
-            update_mu.append(lp.get_primal_optimizer('mu'))
+            update_mu.append(lp.primal_optimizer('mu'))
 
-        return np.hstack(update_mu)
+        return np.vstack(update_mu).T
 
     def _solve_subproblem(self, x0, identifier):
         '''
@@ -227,8 +227,8 @@ class HybridModelPredictiveController(object):
         for t in range(self.T):
 
             # construct bounds
-            lb_t = [-identifier[(t, i)] if identifier.has_key((t, i)) else 0. for i in range(self.mld.nub)]
-            ub_t = [ identifier[(t, i)] if identifier.has_key((t, i)) else 1. for i in range(self.mld.nub)]
+            lb_t = [-identifier[(t, i)] if (t, i) in identifier else 0. for i in range(self.mld.nub)]
+            ub_t = [ identifier[(t, i)] if (t, i) in identifier else 1. for i in range(self.mld.nub)]
 
             # set bounds
             self.qp.set_constraint_rhs('nu_lb_%d'%t, lb_t)
@@ -287,7 +287,7 @@ class HybridModelPredictiveController(object):
         index = max([k[1]+1 for k in identifier.keys() if k[0] == t] + [0])
 
         # try to fix one more ub at time t
-        if index_u < self.mld.nub:
+        if index < self.mld.nub:
             branches = [{(t,index): 0.}, {(t,index): 1.}]
 
         # if everything is fixed at time t, move to time t+1
@@ -296,51 +296,51 @@ class HybridModelPredictiveController(object):
 
         return branches
 
-    def construct_warm_start(self, leaves, x0, u0, e0):
+    # def construct_warm_start(self, leaves, x0, u0, e0):
 
-        # needed for a (redundant) check
-        x1 = self.mld.A.dot(x0) + self.mld.B.dot(u0) + e0
+    #     # needed for a (redundant) check
+    #     x1 = self.mld.A.dot(x0) + self.mld.B.dot(u0) + e0
 
-        # initialize nodes for warm start
-        warm_start = []
+    #     # initialize nodes for warm start
+    #     warm_start = []
 
-        # check each on of the optimal leaves
-        for l in leaves:
+    #     # check each on of the optimal leaves
+    #     for l in leaves:
 
-            # if the identifier of the leaf does not agree with the stage_variables drop the leaf
-            if self._retain_leaf(l.identifier, u0):
-                identifier = self._get_new_identifier(l.identifier)
-                solution = {}
+    #         # if the identifier of the leaf does not agree with the stage_variables drop the leaf
+    #         if self._retain_leaf(l.identifier, u0):
+    #             identifier = self._get_new_identifier(l.identifier)
+    #             solution = {}
 
-                # propagate lower bounds if leaf is feasible
-                if l.feasible() in [True, None]:
-                    feasible = None
-                    solution['dual_solution'] = 
-                    lower_bound = l.objective + sum(lam)
-                    extra_data['objective_dual'] = lower_bound
-                    extra_data['dual'] = self._propagate_dual_solution(l.extra_data['dual_solution'])
+    #             # propagate lower bounds if leaf is feasible
+    #             if l.feasible() in [True, None]:
+    #                 feasible = None
+    #                 solution['dual_solution'] = 
+    #                 lower_bound = l.objective + sum(lam)
+    #                 extra_data['objective_dual'] = lower_bound
+    #                 extra_data['dual'] = self._propagate_dual_solution(l.extra_data['dual_solution'])
                     
-                    solution['dual_solution'] = self._propagate_dual_solution(l.solution['dual_solution'])
-                    solution['objective'] = self._evaluate_dual_solution(x0, identifier, solution['dual_solution'])
+    #                 solution['dual_solution'] = self._propagate_dual_solution(l.solution['dual_solution'])
+    #                 solution['objective'] = self._evaluate_dual_solution(x0, identifier, solution['dual_solution'])
 
-                else:
+    #             else:
 
-                    # propagate infeasibility if leaf is still infeasible
-                    feasible = False
-                    lam = self._get_lams(l.identifier, l.extra_data['farkas_proof'], stage_variables)
-                    if stage_variables['e_0'].dot(l.extra_data['farkas_proof']['alpha'][1]) < l.extra_data['farkas_objective'] + lam[2]:
-                        lower_bound = np.inf
-                        extra_data['farkas_objective'] = l.extra_data['farkas_objective'] + lam[2] + lam[4]
-                        extra_data['farkas_proof'] = self._propagate_dual_solution(l.extra_data['farkas_proof'])
+    #                 # propagate infeasibility if leaf is still infeasible
+    #                 feasible = False
+    #                 lam = self._get_lams(l.identifier, l.extra_data['farkas_proof'], stage_variables)
+    #                 if stage_variables['e_0'].dot(l.extra_data['farkas_proof']['alpha'][1]) < l.extra_data['farkas_objective'] + lam[2]:
+    #                     lower_bound = np.inf
+    #                     extra_data['farkas_objective'] = l.extra_data['farkas_objective'] + lam[2] + lam[4]
+    #                     extra_data['farkas_proof'] = self._propagate_dual_solution(l.extra_data['farkas_proof'])
 
-                    # if potentially feasible
-                    else:
-                        lower_bound = - np.inf
+    #                 # if potentially feasible
+    #                 else:
+    #                     lower_bound = - np.inf
 
-                # add new node to the list for the warm start
-                warm_start.append(Node(None, identifier, feasible, lower_bound, extra_data))
+    #             # add new node to the list for the warm start
+    #             warm_start.append(Node(None, identifier, feasible, lower_bound, extra_data))
 
-        return warm_start
+    #     return warm_start
 
     def shift_dual_solution(self, variables, identifier, x1):
 

@@ -3,7 +3,7 @@ from time import time
 from pygraphviz import AGraph
 from subprocess import call
 from os import getcwd
-from copy import deepcopy
+# from copy import deepcopy
 
 class Node(object):
     '''
@@ -31,8 +31,10 @@ class Node(object):
         '''
 
         # initialize node
+        self.branch = branch
+        self.parent_identifier = None if parent is None else parent.identifier
         self.identifier = branch if parent is None else {**branch, **parent.identifier}
-        self.lb = lb if parent is None else min(lb, parent.lb)
+        self.lb = lb if parent is None else max(lb, parent.lb)
         self.additional = additional
         self.integer_feasible = None
         
@@ -46,11 +48,11 @@ class Node(object):
             Function that given the identifier of the node solves its subproblem.
             The solver must return:
             - integer_feasible (bool): True if the subproblem is a feasible
-            - lower_bound (float or np.inf): cost of the subproblem (np.inf if infeasible).
+            - lb (float or np.inf): cost of the subproblem (np.inf if infeasible).
             - additional: container for all data we want to retrieve after the solution.
         '''
 
-        # solve subproblem (overwrites self.lower_bound and self.additional)
+        # solve subproblem (overwrites self.lb and self.additional)
         [self.integer_feasible, self.lb, self.additional] = solver(self.identifier)
 
 class Printer(object):
@@ -76,8 +78,8 @@ class Printer(object):
         self.tic = time()
         self.last_print_time = time()
         self.solved_count = 0
-        self.lower_bound = -np.inf
-        self.upper_bound = np.inf
+        self.lb = -np.inf
+        self.ub = np.inf
 
     def add_one_node(self):
         '''
@@ -88,21 +90,21 @@ class Printer(object):
 
     def print_warm_start(self, warm_start):
 
-        print 'Loaded warm start with %d nodes.' % (len(warm_start)),
-        print 'Lower bound provided by the warm start is %.3f.' % min([node.lower_bound for node in warm_start])
+        print('Loaded warm start with %d nodes.' % (len(warm_start)), end='')
+        print('Lower bound provided by the warm start is %.3f.' % min([node.lb for node in warm_start]))
 
-    def print_first_row(self):
+    def print_first_row(self, tol):
         '''
         Prints the first row of the table, the one with the titles of the columns.
         '''
-
-        print '|',
-        print 'Updates'.center(self.column_width) + '|',
-        print 'Time (s)'.center(self.column_width) + '|',
-        print 'Nodes (#)'.center(self.column_width) + '|',
-        print 'Lower bound'.center(self.column_width) + '|',
-        print 'Upper bound'.center(self.column_width) + '|'
-        print (' ' + '-' * (self.column_width + 1)) * 5
+        print('Optimality tolerance set to %.3f.'%tol)
+        print('|', end='')
+        print('Updates'.center(self.column_width) + '|', end='')
+        print('Time (s)'.center(self.column_width) + '|', end='')
+        print('Nodes (#)'.center(self.column_width) + '|', end='')
+        print('Lower bound'.center(self.column_width) + '|', end='')
+        print('Upper bound'.center(self.column_width) + '|')
+        print((' ' + '-' * (self.column_width)) * 5)
 
     def print_new_row(self, updates):
         '''
@@ -114,15 +116,15 @@ class Printer(object):
             Updates to write in the first column of the table.
         '''
 
-        print ' ',
-        print updates.ljust(self.column_width+1),
-        print ('%.3f' % (time() - self.tic)).ljust(self.column_width+1),
-        print ('%d' % self.solved_count).ljust(self.column_width+1),
-        print ('%.3f' % self.lower_bound).ljust(self.column_width+1),
-        print ('%.3f' % self.upper_bound).ljust(self.column_width+1)
+        print(' ', end='')
+        print(updates.ljust(self.column_width+1), end='')
+        print(('%.3f' % (time() - self.tic)).ljust(self.column_width+1), end='')
+        print(('%d' % self.solved_count).ljust(self.column_width+1), end='')
+        print(('%.3f' % self.lb).ljust(self.column_width+1), end='')
+        print(('%.3f' % self.ub).ljust(self.column_width+1))
 
 
-    def print_and_update(self, lower_bound, upper_bound):
+    def print_and_update(self, lb, ub):
         '''
         Prints the status of the algorithm ONLY in case:
         - the root node is solved,
@@ -131,22 +133,22 @@ class Printer(object):
 
         Arguments
         ----------
-        lower_bound : float
+        lb : float
             Best lower bound in the branch and bound algorithm at the moment of
             the call of this method.
-        upper_bound : float
+        ub : float
             Best upper bound in the branch and bound algorithm at the moment of
             the call of this method.
         '''
 
-        # check if a print is required (self.lower_bound = -inf only at the beginning)
-        root_node_solved = self.lower_bound == -np.inf
-        new_incumbent = upper_bound < self.upper_bound
+        # check if a print is required (self.lb = -inf only at the beginning)
+        root_node_solved = self.lb == -np.inf
+        new_incumbent = ub < self.ub
         print_time = (time() - self.last_print_time) > self.printing_period
 
         # update bounds (to be done before printing)
-        self.lower_bound = lower_bound
-        self.upper_bound = upper_bound
+        self.lb = lb
+        self.ub = ub
 
         # continue only if print is required
         if any([root_node_solved, new_incumbent, print_time]):
@@ -163,25 +165,25 @@ class Printer(object):
             self.print_new_row(updates)
             self.last_print_time = time()
 
-    def print_solution(self):
+    def print_solution(self, tol):
         '''
         Prints the final massage.
         '''
 
         # print final row in the table
-        if np.np.isinf(self.upper_bound):
+        if np.isinf(self.ub):
             self.print_new_row('Infeasible')
         else:
             self.print_new_row('Solution found')
 
         # print nodes and time
-        print '\nExplored %d nodes in %.3f seconds:' % (self.solved_count, time() - self.tic),
+        print('\nExplored %d nodes in %.3f seconds:'%(self.solved_count, time() - self.tic), end=' ')
 
         # print bounds
-        if np.np.isinf(self.upper_bound):
-            print 'problem is infeasible.'
+        if np.isinf(self.ub):
+            print('problem is infeasible.')
         else:
-            print 'optimal solution found with lower_bound %.3f.' % self.upper_bound
+            print('optimal solution found with cost %.3f.'%self.ub)
         
 class Drawer(object):
     '''
@@ -191,12 +193,12 @@ class Drawer(object):
     def __init__(self):
 
         # initialize tree
-        self.graph = AGraph(directed=True, strict=True, filled=True,)
+        self.graph = AGraph(directed=True, strict=True, filled=True)
         # self.graph.graph_attr['label'] = 'Branch and bound tree'
         self.graph.node_attr['style'] = 'filled'
         self.graph.node_attr['fillcolor'] = 'white'
 
-    def draw_node(self, node, pruning_criteria):
+    def draw_node(self, node, iter_result):
         '''
         Adds a node to the tree.
 
@@ -204,39 +206,36 @@ class Drawer(object):
         ----------
         node : instance of Node
             Leaf to be added to the tree.
-        pruning_criteria : string or None
-            Reason why the leaf has been pruned ('infeasibility', 'suboptimality', or 'new_incumbent').
-            None in case the leaf has not been pruned.
+        iter_result : string or None
+            What happened in the iteration: 'pruning', 'solution_update', 'branching'.
         '''
 
         # node color based on the pruning criteria
-        if pruning_criteria == 'infeasibility':
+        if iter_result == 'pruning':
             color = 'red'
-        # elif pruning_criteria == 'suboptimality':
-        #     color = 'blue'
-        elif pruning_criteria == 'new_incumbent':
-            color = 'green'
-        else:
+        elif iter_result == 'solution_update':
+            color = 'blue'
+        elif iter_result == 'branching':
             color = 'black'
 
         # node label
         label = 'Branch: ' + self.break_identifier(node.branch) + '\n'
-        if node.lower_bound is not None:
-            label += 'lower_bound: %.3f' % node.lower_bound + '\n'
+        if node.lb is not None:
+            label += 'Lower bound: %.3f' % node.lb + '\n'
 
         # add node to the tree
         self.graph.add_node(node.identifier, color=color, label=label)
 
         # connect node to the parent
-        if node.parent is not None:
-            self.graph.add_edge(node.parent.identifier, node.identifier)
+        if node.parent_identifier is not None:
+            self.graph.add_edge(node.parent_identifier, node.identifier)
 
     def draw_warm_start(self, warm_start):
         for node in warm_start:
             label = 'Branch: ' + self.break_identifier(node.branch)
-            if not np.isinf(node.lower_bound):
+            if not np.isinf(node.lb):
                 color = 'green'
-                label +=  '\nLower bound: %.3f' % node.lower_bound + '\n'
+                label +=  '\nLower bound: %.3f' % node.lb + '\n'
             else:
                 color = 'blue'
             self.graph.add_node(node.identifier, color=color, label=label)
@@ -286,7 +285,7 @@ def branch_and_bound(
         printing_period=3.,
         tree_file_name=None,
         warm_start=None,
-        eps=0.
+        tol=0.,
         **kwargs
         ):
     '''
@@ -335,7 +334,7 @@ def branch_and_bound(
         printer = Printer(printing_period, **kwargs)
         if warm_start is not None:
             printer.print_warm_start(warm_start)
-        printer.print_first_row()
+        printer.print_first_row(tol)
 
     # initialize drawing
     if tree_file_name is not None:
@@ -346,7 +345,7 @@ def branch_and_bound(
     while True:
 
         # termination check
-        candidate_nodes = [l for l in leaves if l.lb < ub - eps]
+        candidate_nodes = [l for l in leaves if l.lb < ub - tol]
         if not candidate_nodes:
             break
 
@@ -356,20 +355,19 @@ def branch_and_bound(
         solved_count += 1
 
         # pruning
-        if working_node.lb >= ub - eps:
-            # pruning_criteria = 'pruning'
-            pass
+        if working_node.lb >= ub - tol:
+            iter_result = 'pruning'
 
         # solution update
         elif working_node.integer_feasible:
-            # pruning_criteria = 'solution_update'
+            iter_result = 'solution_update'
             incumbent = working_node
             ub = working_node.lb
             
         # branching
         else:
-            # pruning_criteria = None
-            children = [Node(working_node, branch) for branch in brancher(working_node.identifier)]
+            iter_result = 'branching'
+            children = [Node(branch, parent=working_node) for branch in brancher(working_node.identifier)]
             leaves.remove(working_node)
             leaves.extend(children)
 
@@ -381,11 +379,11 @@ def branch_and_bound(
 
         # draw node
         if tree_file_name is not None:
-            drawer.draw_node(working_node, pruning_criteria)
+            drawer.draw_node(working_node, iter_result)
 
     # print solution
     if printing_period is not None:
-        printer.print_solution()
+        printer.print_solution(tol)
 
     # draw solution
     if tree_file_name is not None:
@@ -393,7 +391,7 @@ def branch_and_bound(
             drawer.draw_solution(incumbent)
         drawer.save_and_open(tree_file_name)
 
-    return [None,[]] incumbent is None else [ub,leaves]
+    return incumbent, leaves
 
 def breadth_first(candidate_nodes):
     '''

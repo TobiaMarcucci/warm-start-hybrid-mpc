@@ -11,7 +11,7 @@ class BoundedQP(grb.Model):
 
     def __init__(self, **kwargs):
 
-        super(BoundedQP, self).__init__(**kwargs)
+        super().__init__(**kwargs)
 
         # change some default parameters
         self.Params.OutputFlag = 0
@@ -35,7 +35,7 @@ class BoundedQP(grb.Model):
 
         # prevent from setting bounds here
         # otherwise retrieving the multipliers for the Farkas proof is impossible (?)
-        if kwargs.has_key('lb') or kwargs.has_key('ub'):
+        if 'lb' in kwargs or 'ub' in kwargs:
             raise KeyError('Cannot set bounds with add_variables, use add_constraints instead.')
 
         # change the default lower bound to -inf, gurobi uses 0 by default
@@ -171,7 +171,7 @@ class BoundedQP(grb.Model):
 
         # check input size
         c = self.get_constraints(name)
-        if c.size != rhs.size:
+        if len(c) != len(rhs):
             raise ValueError('The rhs does not have the right dimension.')
 
         # reset rhs one by one
@@ -204,7 +204,7 @@ class BoundedQP(grb.Model):
         self.reset()
 
         # run the optimization
-        super(BoundedQP, self).optimize()
+        super().optimize()
 
         # if not optimal then infeasible, do Farkas proof
         if self.status != 2:
@@ -215,7 +215,7 @@ class BoundedQP(grb.Model):
             # rerun the optimization with linear objective
             # (only linear accepted for farkas proof)
             self.setObjective(0.)
-            super(BoundedQP, self).optimize()
+            super().optimize()
 
             # ensure new problem is actually infeasible
             if self.status != 3:
