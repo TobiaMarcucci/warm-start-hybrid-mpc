@@ -3,7 +3,6 @@ from time import time
 from pygraphviz import AGraph
 from subprocess import call
 from os import getcwd
-# from copy import deepcopy
 
 class Node(object):
     '''
@@ -13,28 +12,27 @@ class Node(object):
     def __init__(self, branch, parent=None, lb=-np.inf, additional=None):
         '''
         A node is uniquely identified by its identifier.
-        The identifier is a dictionary containing the binary assigment.
+        The identifier must be a dictionary.
         The identifier of the node is given by the union of the identifier of its partent and the branch dictionary.
 
-        Arguments
+        Parameters
         ----------
         branch : dict
-            Sub-identifier that merged with the identifier of the parent
-            gives the identifier of the child.
+            Sub-identifier that merged with the identifier of the parent gives the identifier of the child.
         parent : Node or None
             Parent node in the branch and bound tree.
-            The parent of the root node is assumed to be None.
-        score_lb : float
-            Lower bound to the score of the node provided by the user (useful in case of warm start).
+            The parent of the root node is None.
+        lb : float or +-np.inf
+            Lower bound on the score of the node provided by the user (useful in case of warm start).
         additional : anything
-            Any additional info that must be kept inside a node.
+            Any additional info that must be stored in a node.
         '''
 
-        # initialize node
-        self.branch = branch
-        self.parent_identifier = None if parent is None else parent.identifier
-        self.identifier = branch if parent is None else {**branch, **parent.identifier}
-        self.lb = lb if parent is None else max(lb, parent.lb)
+        # store date
+        self.is_root = parent is None
+        self.branch_length = len(branch)
+        self.identifier = branch if self.is_root else {**branch, **parent.identifier}
+        self.lb = lb if self.is_root else max(lb, parent.lb)
         self.additional = additional
         self.integer_feasible = None
         
@@ -42,213 +40,312 @@ class Node(object):
         '''
         Solves the subproblem for this node.
 
-        Arguments
+        Parameters
         ----------
         solver : function
             Function that given the identifier of the node solves its subproblem.
-            The solver must return:
-            - integer_feasible (bool): True if the subproblem is a feasible
-            - lb (float or np.inf): cost of the subproblem (np.inf if infeasible).
-            - additional: container for all data we want to retrieve after the solution.
+            The solver must return the follwoing.
+            integer_feasible (bool): True if the subproblem is a feasible solution to the combinatorial problem, False if not.
+            lb (float or np.inf): score of the subproblem (np.inf if infeasible).
+            additional: any data we want to retrieve after the solution.
         '''
 
         # solve subproblem (overwrites self.lb and self.additional)
         [self.integer_feasible, self.lb, self.additional] = solver(self.identifier)
+
+    @property
+    def parent_identifier(self):
+        '''
+        Reconstructs the identifier of the parent of the node.
+
+        Returns
+        -------
+        dict
+            Identifier of the parent node.
+            None for a root node.
+        '''
+
+        # if not a root node, remove branch from the identifier
+        if not self.is_root:
+            return dict(list(self.identifier.items())[self.branch_length:])
+
+    @property
+    def branch(self):
+        '''
+        Reconstructs the branch of the node.
+
+        Returns
+        -------
+        dict
+            Node branch.
+        '''
+
+        # if this is a root node, return the identifier
+        if self.is_root:
+            return self.identifier
+
+        # if not a root node, extract the branch from the identifier
+        return dict(list(self.identifier.items())[:self.branch_length])
 
 class Printer(object):
     '''
     Printer for the branch and bound algorithm.
     '''
 
-    def __init__(self, printing_period, column_width=15):
+    def __init__(self, printing_period):
         '''
-        Arguments
+        Sores the printing_period and initializes the internal state.
+
+        Parameters
         ----------
         printing_period : float or None
             Maximum amount of time in seconds without printing.
-        column_width : int
-            Number of characters of the columns of the table printed during the solution.
         '''
 
-        # store parameters
+        # store printing_period and initilize only if not None
         self.printing_period = printing_period
-        self.column_width = column_width
+        if printing_period is not None:
 
-        # initialize variables that will change as time goes on
-        self.tic = time()
-        self.last_print_time = time()
-        self.solved_count = 0
-        self.lb = -np.inf
-        self.ub = np.inf
+            # initialize internal state of the printer
+            self.start_time = time()
+            self.last_print_time = time()
+            self.iteration_count = 0
+            self.lb = -np.inf
+            self.ub = np.inf
 
-    def add_one_node(self):
+            # others
+            self._column_width = 15
+
+    def initialize(self, warm_start, tol):
         '''
-        Adds one node to the number of explore nodes.
+        Prints the info on the warm start (if one is given) and the first row of the table.
+        Does not print anything if the printing_period is None.
+
+        Parameters
+        ----------
+        warm_start : list of Nodes
+            Root nodes for the branch and bound algorithm.
+        tol : float
+            Nonnegative tolerance on the convergence of the branch and bound.
         '''
 
-        self.solved_count += 1
+        # shut down printing if not rquired
+        if self.printing_period is not None:
+            if warm_start is not None:
+                self._warm_start(warm_start)
+            self._first_row(tol)
 
-    def print_warm_start(self, warm_start):
+    def _warm_start(self, warm_start):
+        '''
+        Prints the info regarding the warm start provided to the solver.
 
-        print('Loaded warm start with %d nodes.' % (len(warm_start)), end='')
-        print('Lower bound provided by the warm start is %.3f.' % min([node.lb for node in warm_start]))
+        Parameters
+        ----------
+        warm_start : list of Nodes
+            Root nodes for the branch and bound algorithm.
+        '''
 
-    def print_first_row(self, tol):
+        print('Loaded warm start with %d nodes.' % len(warm_start), end='')
+        print('Lower bound from warm start is %.3f.' % min([n.lb for n in warm_start]))
+
+    def _first_row(self, tol):
         '''
         Prints the first row of the table, the one with the titles of the columns.
-        '''
-        print('Optimality tolerance set to %.3f.'%tol)
-        print('|', end='')
-        print('Updates'.center(self.column_width) + '|', end='')
-        print('Time (s)'.center(self.column_width) + '|', end='')
-        print('Nodes (#)'.center(self.column_width) + '|', end='')
-        print('Lower bound'.center(self.column_width) + '|', end='')
-        print('Upper bound'.center(self.column_width) + '|')
-        print((' ' + '-' * (self.column_width)) * 5)
 
-    def print_new_row(self, updates):
+        Parameters
+        ----------
+        tol : float
+            Nonnegative tolerance on the convergence of the branch and bound.
+        '''
+
+        print('Optimality tolerance set to %.2e.'%tol)
+        print('|', end='')
+        print('Updates'.center(self._column_width) + '|', end='')
+        print('Time (s)'.center(self._column_width) + '|', end='')
+        print('Solved nodes'.center(self._column_width) + '|', end='')
+        print('Lower bound'.center(self._column_width) + '|', end='')
+        print('Upper bound'.center(self._column_width) + '|')
+        print((' ' + '-' * (self._column_width)) * 5)
+
+    def iteration_update(self, leaves, ub):
+        '''
+        Function to be called at each iteration of the branch and bound to update the printer.
+        Prints the status of the algorithm only in case one of the follwoing holds.
+        The root node is solved.
+        A new incumbent has been found after the last call of the function.
+        Nothing has been printed in the last printing_period seconds.
+
+        Parameters
+        ----------
+        leaves : list of nodes
+            Current leaves of the branch and bound tree.
+        ub : float
+            Best upper bound in the branch and bound algorithm at the moment of the call of this method.
+        '''
+
+        # shut down printing if not rquired
+        if self.printing_period is not None:
+
+            # check if a new row must be printed
+            if np.isinf(self.lb):
+                updates = 'Root node'
+            elif ub < self.ub:
+                updates = 'New incumbent'
+            elif (time() - self.last_print_time) > self.printing_period:
+                updates = ''
+            else:
+                updates = None
+
+            # update internal state of the printer
+            self.iteration_count += 1
+            self.lb = min([l.lb for l in leaves])
+            self.ub = ub
+            if updates is not None:
+                self.last_print_time = time()
+
+            # print new row
+            self._new_row(updates)
+
+    def _new_row(self, updates):
         '''
         Prints a new row of the table.
 
-        Arguments
+        Parameters
         ----------
         updates : string
             Updates to write in the first column of the table.
         '''
 
-        print(' ', end='')
-        print(updates.ljust(self.column_width+1), end='')
-        print(('%.3f' % (time() - self.tic)).ljust(self.column_width+1), end='')
-        print(('%d' % self.solved_count).ljust(self.column_width+1), end='')
-        print(('%.3f' % self.lb).ljust(self.column_width+1), end='')
-        print(('%.3f' % self.ub).ljust(self.column_width+1))
+        if updates is not None:
+            print(' ', end='')
+            print(updates.ljust(self._column_width+1), end='')
+            print(('%.2f' % (time() - self.start_time)).ljust(self._column_width+1), end='')
+            print(('%d' % self.iteration_count).ljust(self._column_width+1), end='')
+            print(('%.3e' % self.lb).ljust(self._column_width+1), end='')
+            print(('%.3e' % self.ub).ljust(self._column_width+1))
 
-
-    def print_and_update(self, lb, ub):
+    def solution(self):
         '''
-        Prints the status of the algorithm ONLY in case:
-        - the root node is solved,
-        - a new incumbent has been found after the last call of the function,
-        - nothing has been printed in the last printing_period seconds.
-
-        Arguments
-        ----------
-        lb : float
-            Best lower bound in the branch and bound algorithm at the moment of
-            the call of this method.
-        ub : float
-            Best upper bound in the branch and bound algorithm at the moment of
-            the call of this method.
+        Prints the final row in the table and the solution report.
         '''
 
-        # check if a print is required (self.lb = -inf only at the beginning)
-        root_node_solved = self.lb == -np.inf
-        new_incumbent = ub < self.ub
-        print_time = (time() - self.last_print_time) > self.printing_period
+        # shut down printing if not rquired
+        if self.printing_period is not None:
 
-        # update bounds (to be done before printing)
-        self.lb = lb
-        self.ub = ub
+            # print final row in the table
+            updates = 'Infeasible' if np.isinf(self.ub) else 'Solution found'
+            self._new_row(updates)
 
-        # continue only if print is required
-        if any([root_node_solved, new_incumbent, print_time]):
+            # print nodes and time
+            print('\nExplored %d nodes in %.3f seconds:'%(self.iteration_count, time() - self.start_time), end=' ')
 
-            # write updates if new bounds has been found in this loop
-            if root_node_solved:
-                updates = 'Root node'
-            elif new_incumbent:
-                updates = 'New incumbent'
-            elif print_time:
-                updates = ''
-
-            # print
-            self.print_new_row(updates)
-            self.last_print_time = time()
-
-    def print_solution(self, tol):
-        '''
-        Prints the final massage.
-        '''
-
-        # print final row in the table
-        if np.isinf(self.ub):
-            self.print_new_row('Infeasible')
-        else:
-            self.print_new_row('Solution found')
-
-        # print nodes and time
-        print('\nExplored %d nodes in %.3f seconds:'%(self.solved_count, time() - self.tic), end=' ')
-
-        # print bounds
-        if np.isinf(self.ub):
-            print('problem is infeasible.')
-        else:
-            print('optimal solution found with cost %.3f.'%self.ub)
+            # print optimal value
+            if np.isinf(self.ub):
+                print('problem is infeasible.')
+            else:
+                print('optimal solution found with cost %.3e.'%self.ub)
         
 class Drawer(object):
     '''
     Drawer of the branch and bound tree.
     '''
 
-    def __init__(self):
+    def __init__(self, name):
+        '''
+        Parameters
+        ----------
+        name : string
+            Name of the graph and of the pdf for the drawing of it.
+        '''
 
-        # initialize tree
-        self.graph = AGraph(directed=True, strict=True, filled=True)
-        # self.graph.graph_attr['label'] = 'Branch and bound tree'
-        self.graph.node_attr['style'] = 'filled'
-        self.graph.node_attr['fillcolor'] = 'white'
+        # store tree name and initilize only if not None
+        self.name = name
+        if name is not None:
 
-    def draw_node(self, node, iter_result):
+            # initilize graph
+            self.graph = AGraph(directed=True, strict=True, filled=True)
+            self.graph.graph_attr['label'] = name
+            self.graph.node_attr['style'] = 'filled'
+            self.graph.node_attr['fillcolor'] = 'white'
+
+    def warm_start(self, warm_start):
+        '''
+        Draws the multiple root nodes of the tree in case a warm start is given.
+
+        Parameters
+        ----------
+        warm_start : list of Nodes
+            Root nodes for the branch and bound algorithm.
+        '''
+
+        # continue only if drawing is required and a warm start is provided
+        if self.name is not None and warm_start is not None:
+
+            # add one root node per time
+            for node in warm_start:
+                label = 'Branch: ' + self.break_identifier(node.branch)
+                label +=  '\nLower bound: %.3f' % node.lb + '\n'
+                self.graph.add_node(node.identifier, color='green', label=label)
+
+    def node(self, node, threshold):
         '''
         Adds a node to the tree.
 
-        Arguments
+        Parameters
         ----------
         node : instance of Node
             Leaf to be added to the tree.
-        iter_result : string or None
+        threshold : float or np.inf
+            Difference of the best upper bound found so far and the solution tolerance.
             What happened in the iteration: 'pruning', 'solution_update', 'branching'.
         '''
 
-        # node color based on the pruning criteria
-        if iter_result == 'pruning':
-            color = 'red'
-        elif iter_result == 'solution_update':
-            color = 'blue'
-        elif iter_result == 'branching':
-            color = 'black'
+        # continue only if drawing is required
+        if self.name is not None:
 
-        # node label
-        label = 'Branch: ' + self.break_identifier(node.branch) + '\n'
-        if node.lb is not None:
+            # node color (based on the pruning criteria)
+            if node.lb >= threshold: # pruning
+                color = 'red'
+            elif node.integer_feasible: # solution update
+                color = 'blue'
+            else: # branching
+                color = 'black'
+
+            # node label
+            label = 'Branch: ' + self.break_identifier(node.branch) + '\n'
             label += 'Lower bound: %.3f' % node.lb + '\n'
 
-        # add node to the tree
-        self.graph.add_node(node.identifier, color=color, label=label)
-
-        # connect node to the parent
-        if node.parent_identifier is not None:
-            self.graph.add_edge(node.parent_identifier, node.identifier)
-
-    def draw_warm_start(self, warm_start):
-        for node in warm_start:
-            label = 'Branch: ' + self.break_identifier(node.branch)
-            if not np.isinf(node.lb):
-                color = 'green'
-                label +=  '\nLower bound: %.3f' % node.lb + '\n'
-            else:
-                color = 'blue'
+            # add node to the tree
             self.graph.add_node(node.identifier, color=color, label=label)
 
+            # connect node to the parent
+            if not node.is_root:
+                self.graph.add_edge(node.parent_identifier, node.identifier)
+
+    def get_branch(self, identifier):
+
+    def get_parent(self, identifier):
+        for i in range(len(identifier)):
+            if self.graph.has_node(identifier[i:]):
+                return self.graph.get_node(identifier[i:])
+
     def break_identifier(self, identifier):
-        broken_identifier = [str(k) + ', ' + str(v) for k, v in identifier.items()]
-        return '\n'.join(broken_identifier)
+        '''
+        Breaks an identifier in multiples lines.
+        Useful for drawing the warm start.
+
+        Parameters
+        ----------
+        identifier : dict
+            Dictionary identifying a node.
+        '''
+        return '\n'.join([str(i)[1:-1] for i in identifier.items()])
 
     def draw_solution(self, node):
         '''
         Marks the leaf with the optimal solution.
 
-        Arguments
+        Parameters
         ----------
         node : instance of Node
             Leaf associated with the optimal solution.
@@ -258,18 +355,13 @@ class Drawer(object):
         self.graph.get_node(node.identifier).attr['color'] = 'black'
         self.graph.get_node(node.identifier).attr['fillcolor'] = 'green'
 
-    def save_and_open(self, file_name='branch_and_bound_tree'):
+    def save_and_open(self):
         '''
         Saves the tree in a pdf file and opens it.
-
-        Arguments
-        ----------
-        file_name : string
-            Name of the pdf in which to save the drawing of the tree.
         '''
 
         # write pdf file
-        directory = getcwd() + '/' + file_name
+        directory = getcwd() + '/' + self.graph.graph_attr['label'].replace(' ', '_')
         self.graph.write(directory + '.dot')
         self.graph = AGraph(directory + '.dot')
         self.graph.layout(prog='dot')
@@ -282,16 +374,16 @@ def branch_and_bound(
         solver,
         candidate_selection,
         brancher,
-        printing_period=3.,
-        tree_file_name=None,
-        warm_start=None,
         tol=0.,
+        warm_start=None,
+        printing_period=3.,
+        draw_name=None,
         **kwargs
         ):
     '''
     Branch and bound solver for combinatorial optimization problems.
 
-    Arguments
+    Parameters
     ----------
     solver : function
         Function that given the identifier of the node solves its subproblem.
@@ -308,7 +400,7 @@ def branch_and_bound(
         Period in seconds for printing the status of the solver.
         Set it ot None to shut the log.
 
-    tree_file_name :
+    draw_name :
     warm_start :
 
     Returns
@@ -319,28 +411,20 @@ def branch_and_bound(
         the incumbent node.
     solution_time : float
         Overall time spent to solve the combinatorial program.
-    solved_count : int
-        Number of nodes at convergence in the tree.
     '''
 
     # initialization
     ub = np.inf
     incumbent = None
     leaves = [Node({})] if warm_start is None else warm_start
-    solved_count = 0
 
     # initialize printing
-    if printing_period is not None:
-        printer = Printer(printing_period, **kwargs)
-        if warm_start is not None:
-            printer.print_warm_start(warm_start)
-        printer.print_first_row(tol)
+    printer = Printer(printing_period)
+    printer.initialize(warm_start, tol)
 
     # initialize drawing
-    if tree_file_name is not None:
-        drawer = Drawer()
-        if warm_start is not None:
-            drawer.draw_warm_start(warm_start)
+    drawer = Drawer(draw_name)
+    drawer.warm_start(warm_start)
 
     while True:
 
@@ -352,44 +436,36 @@ def branch_and_bound(
         # selection and solution of candidate node
         working_node = candidate_selection(candidate_nodes)
         working_node.solve(solver)
-        solved_count += 1
 
         # pruning
         if working_node.lb >= ub - tol:
-            iter_result = 'pruning'
+            pass
 
         # solution update
         elif working_node.integer_feasible:
-            iter_result = 'solution_update'
             incumbent = working_node
             ub = working_node.lb
             
         # branching
         else:
-            iter_result = 'branching'
             children = [Node(branch, parent=working_node) for branch in brancher(working_node.identifier)]
             leaves.remove(working_node)
             leaves.extend(children)
 
-        # print status
-        if printing_period is not None:
-            lb = min([l.lb for l in leaves])
-            printer.add_one_node()
-            printer.print_and_update(lb, ub)
+        # update printer
+        printer.iteration_update(leaves, ub)
 
         # draw node
-        if tree_file_name is not None:
-            drawer.draw_node(working_node, iter_result)
+        drawer.node(working_node, ub-tol)
 
     # print solution
-    if printing_period is not None:
-        printer.print_solution(tol)
+    printer.solution()
 
     # draw solution
-    if tree_file_name is not None:
+    if draw_name is not None:
         if incumbent is not None:
             drawer.draw_solution(incumbent)
-        drawer.save_and_open(tree_file_name)
+        drawer.save_and_open()
 
     return incumbent, leaves
 
@@ -399,7 +475,7 @@ def breadth_first(candidate_nodes):
     FIFO selection of the nodes.
     Good for proving optimality,bad for finding feasible solutions.
 
-    Arguments
+    Parameters
     ----------
     candidate_nodes : list of Node
         List of the nodes among which we need to select the next subproblem to solve.
@@ -419,7 +495,7 @@ def depth_first(candidate_nodes):
     LIFO selection of the nodes.
     Good for finding feasible solutions, bad for proving optimality.
 
-    Arguments
+    Parameters
     ----------
     candidate_nodes : list of Node
         List of the nodes among which we need to select the next subproblem to solve.
@@ -441,7 +517,7 @@ def best_first(candidate_nodes):
 
     Good for proving optimality, bad for finding feasible solutions.
 
-    Arguments
+    Parameters
     ----------
     candidate_nodes : list of Node
         List of the nodes among which we need to select the next subproblem to solve.
