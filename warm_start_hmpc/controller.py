@@ -6,7 +6,7 @@ from operator import le, ge, eq
 
 # internal inputs
 from warm_start_hmpc.bounded_qp import BoundedQP
-from warm_start_hmpc.subproblem_solution import SubproblemSolution
+from warm_start_hmpc.subproblem_solution import SubproblemSolution, PrimalSolution, DualSolution
 from warm_start_hmpc.branch_and_bound import Node, branch_and_bound, best_first, depth_first
 
 class HybridModelPredictiveController(object):
@@ -259,14 +259,20 @@ class HybridModelPredictiveController(object):
             return solution.integer_feasible, solution.primal.objective, solution
 
         # solve the mixed integer program using branch and bound
-        return branch_and_bound(
+        incumbent, leaves = branch_and_bound(
             solver,
             best_first,
-            self.explore_in_chronological_order,
+            self.branch_in_chronological_order,
             **kwargs
         )
+        uc = incumbent.additional.primal.variables['uc']
+        ub = incumbent.additional.primal.variables['ub']
+        x = incumbent.additional.primal.variables['x']
+        objective = incumbent.additional.primal.objective
 
-    def explore_in_chronological_order(self, identifier):
+        return uc, ub, x, objective, leaves
+
+    def branch_in_chronological_order(self, identifier):
         '''
         Heuristic search for the branch and bound algorithm.
 
@@ -296,53 +302,7 @@ class HybridModelPredictiveController(object):
 
         return branches
 
-    # def construct_warm_start(self, leaves, x0, u0, e0):
-
-    #     # needed for a (redundant) check
-    #     x1 = self.mld.A.dot(x0) + self.mld.B.dot(u0) + e0
-
-    #     # initialize nodes for warm start
-    #     warm_start = []
-
-    #     # check each on of the optimal leaves
-    #     for l in leaves:
-
-    #         # if the identifier of the leaf does not agree with the stage_variables drop the leaf
-    #         if self._retain_leaf(l.identifier, u0):
-    #             identifier = self._get_new_identifier(l.identifier)
-    #             solution = {}
-
-    #             # propagate lower bounds if leaf is feasible
-    #             if l.feasible() in [True, None]:
-    #                 feasible = None
-    #                 solution['dual_solution'] = 
-    #                 lower_bound = l.objective + sum(lam)
-    #                 extra_data['objective_dual'] = lower_bound
-    #                 extra_data['dual'] = self._propagate_dual_solution(l.extra_data['dual_solution'])
-                    
-    #                 solution['dual_solution'] = self._propagate_dual_solution(l.solution['dual_solution'])
-    #                 solution['objective'] = self._evaluate_dual_solution(x0, identifier, solution['dual_solution'])
-
-    #             else:
-
-    #                 # propagate infeasibility if leaf is still infeasible
-    #                 feasible = False
-    #                 lam = self._get_lams(l.identifier, l.extra_data['farkas_proof'], stage_variables)
-    #                 if stage_variables['e_0'].dot(l.extra_data['farkas_proof']['alpha'][1]) < l.extra_data['farkas_objective'] + lam[2]:
-    #                     lower_bound = np.inf
-    #                     extra_data['farkas_objective'] = l.extra_data['farkas_objective'] + lam[2] + lam[4]
-    #                     extra_data['farkas_proof'] = self._propagate_dual_solution(l.extra_data['farkas_proof'])
-
-    #                 # if potentially feasible
-    #                 else:
-    #                     lower_bound = - np.inf
-
-    #             # add new node to the list for the warm start
-    #             warm_start.append(Node(None, identifier, feasible, lower_bound, extra_data))
-
-    #     return warm_start
-
-    def shift_dual_solution(self, variables, identifier, x1):
+    def _shift_dual_solution(self, variables, shifted_identifier, x1):
 
         # initialize shifted dual variables
         shifted_variables = {}
@@ -359,11 +319,11 @@ class HybridModelPredictiveController(object):
             shifted_variables[k].append(0. * variables[k][-1])
 
         # new dual objective
-        shifted_objective = self.evaluate_dual_solution(identifier, x1, shifted_variables)
+        shifted_objective = self._evaluate_dual_solution(shifted_variables, shifted_identifier, x1)
 
-        return DualFeasibleSolution(shifted_variables, shifted_objective)
+        return DualSolution(shifted_variables, shifted_objective)
 
-    def evaluate_dual_solution(self, variables, identifier, x0):
+    def _evaluate_dual_solution(self, variables, identifier, x0):
         '''
         Given a dual solution, returns it cost.
 
@@ -374,7 +334,6 @@ class HybridModelPredictiveController(object):
             Each one of these is a list (ordered in time) of numpy arrays.
         identifier : dict
             Dictionary containing the values for some of the binaries.
-            Pass an empty dictionary to reset the bounds of the binaries to 0 and 1.
         x0 : np.array
             Initial state of the system.
 
@@ -393,7 +352,7 @@ class HybridModelPredictiveController(object):
         objective -= variables['lam'][0].dot(x0)
 
         # cost bounds on binaries
-        v_lb, v_ub = _get_bounds_on_binaries(identifier)
+        v_lb, v_ub = self._get_bounds_on_binaries(identifier)
         objective += sum(v_lb[t].dot(vt) for t, vt in enumerate(variables['nu_lb']))
         objective -= sum(v_ub[t].dot(vt) for t, vt in enumerate(variables['nu_ub']))
 
@@ -427,27 +386,77 @@ class HybridModelPredictiveController(object):
 
         # parse identifier
         for k, v in identifier.items():
-            v_lb[k[1]][k[2]] = v
-            v_ub[k[1]][k[2]] = v
+            v_lb[k[0]][k[1]] = v
+            v_ub[k[0]][k[1]] = v
 
         return v_lb, v_ub
 
+    def construct_warm_start(self, leaves, x0, uc0, ub0, e0):
+
+        # needed for a (redundant) check
+        u0 = np.concatenate((uc0, ub0))
+        x1 = self.mld.A.dot(x0) + self.mld.B.dot(u0) + e0
+
+        # initialize nodes for warm start
+        warm_start = []
+
+        # check each on of the optimal leaves
+        for l in leaves:
+
+            # if the identifier of the leaf does not agree with the stage_variables drop the leaf
+            if self._retain_leaf(l.identifier, ub0):
+                shifted_identifier = self._shift_identifier(l.identifier)
+                print(vars(l))
+                dual = self._shift_dual_solution(l.additional.dual.variables, shifted_identifier, x1)
+
+                # propagate lower bounds if leaf is feasible
+                if not np.isinf(l.lb):
+                    primal = None
+                    lb = dual.objective
+                    
+                # propagate infeasibility if leaf is still infeasible
+                else:
+                    v_lb, v_ub = self._get_bounds_on_binaries(l.identifier)
+                    multipliers = l.additional.dual.variables
+                    lam1 = l.additional.dual.variables['lam'][1]
+                    pi_3 = - (self.mld.F.dot(x0) + self.mld.G.dot(u0) - self.mld.h).dot(multipliers['mu'][0]) + \
+                           - (v_lb[0] - self.mld.V.dot(u0)).dot(multipliers['nu_lb'][0]) + \
+                           - (self.mld.V.dot(u0) - v_ub[0]).dot(multipliers['nu_ub'][0])
+                    pi_5 = .25 * np.linalg.norm(multipliers['rho'][-1])**2 - \
+                           .25 * np.linalg.norm(dual.variables['rho'][-2])**2
+                    pi_7 = self.h_Tm1.dot(multipliers['mu'][-1]) - self.mld.h.dot(dual.variables['mu'][-2])
+
+                    if multipliers['lam'][1].dot(e0) < l.additional.dual.objective + pi_3 + pi_5 + pi_7:
+                        primal = PrimalSolution.infeasible(self.T)
+                        lb = np.inf
+                    else:
+                        primal = None
+                        lb = - np.inf
+
+                # add new node to the list for the warm start
+                integer_feasible = None
+                solution = SubproblemSolution(primal, dual, integer_feasible)
+                node = Node(shifted_identifier, lb=lb, additional=solution)
+                warm_start.append(node)
+
+        return warm_start
+
     @staticmethod
-    def _retain_leaf(identifier, u0):
+    def _retain_leaf(identifier, ub0):
         '''
         '''
 
         # retain until proven otherwise
         retain = True
-
-        # loop over the elements of the identifier and check if they agree with stage variables at time zero
         for k, v in identifier.items():
-            if k[0] == 0 and not np.isclose(v, u0[k[1]]):
+
+            # check if the identifier agrees with the input variable at time zero
+            if k[0] == 0 and not np.isclose(v, ub0[k[1]]):
                 retain = False
                 break
 
         return retain
 
     @staticmethod
-    def _get_new_identifier(identifier):
+    def _shift_identifier(identifier):
         return {(k[0]-1, k[1]): v for k, v in identifier.items() if k[0] > 0}

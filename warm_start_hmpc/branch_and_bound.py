@@ -33,7 +33,7 @@ class Node(object):
         self.lb = lb if parent is None else max(lb, parent.lb)
         self.additional = additional
         self.integer_feasible = None
-        
+
     def solve(self, solver):
         '''
         Solves the subproblem for this node.
@@ -349,7 +349,7 @@ class Drawer(object):
             if self.graph.has_node(parent_identifier):
 
                 # if correct get also the branch and return
-                branch = dict(list(identifier)[:i])
+                branch = dict(list(identifier.items())[:i])
                 return parent_identifier, branch
 
         # otherwise it is a root node
@@ -366,6 +366,7 @@ class Drawer(object):
         identifier : dict
             Dictionary identifying a node.
         '''
+
         return '\n'.join([str(i)[1:-1] for i in identifier.items()])
 
 def branch_and_bound(

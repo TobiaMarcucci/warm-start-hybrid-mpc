@@ -27,8 +27,8 @@ class SubproblemSolution(object):
         '''
 
         # organize primal and dual solutions
-        primal = PrimalFeasibleSolution.from_controller(controller)
-        dual = DualFeasibleSolution.from_controller(controller)
+        primal = PrimalSolution.from_controller(controller)
+        dual = DualSolution.from_controller(controller)
 
         # check if integer_feasible
         rhs = controller.qp.get_constraint_rhs
@@ -38,7 +38,7 @@ class SubproblemSolution(object):
 
         return SubproblemSolution(primal, dual, integer_feasible)
 
-class PrimalFeasibleSolution(object):
+class PrimalSolution(object):
     '''
     Dual feasible (not necessarily optimal) solution of the quadratic subproblem.
     '''
@@ -47,9 +47,9 @@ class PrimalFeasibleSolution(object):
 
         # store primal variables
         self.variables = variables
-        self.x = variables['x']
-        self.uc = variables['uc']
-        self.ub = variables['ub']
+        # self.x = variables['x']
+        # self.uc = variables['uc']
+        # self.ub = variables['ub']
 
         # store primal objective
         self.objective = objective
@@ -68,7 +68,7 @@ class PrimalFeasibleSolution(object):
 
         Returns
         -------
-        PrimalFeasibleSolution
+        PrimalSolution
             Primal solution extracted from the controller.
         '''
 
@@ -79,9 +79,24 @@ class PrimalFeasibleSolution(object):
         for k in ['uc', 'ub']:
             variables[k] = [opt('%s_%d'%(k,t)) for t in range(controller.T)]
 
-        return PrimalFeasibleSolution(variables, controller.qp.primal_objective())
+        return PrimalSolution(variables, controller.qp.primal_objective())
 
-class DualFeasibleSolution(object):
+    @staticmethod
+    def infeasible(T):
+
+        # store primal variables
+        variables = {}
+        variables['x'] = [None for t in range(T)]
+        variables['uc'] = [None for t in range(T-1)]
+        variables['ud'] = [None for t in range(T-1)]
+
+        # store primal objective
+        objective = np.inf
+
+        return PrimalSolution(variables, objective)
+
+
+class DualSolution(object):
     '''
     Dual feasible (not necessarily optimal) solution of the quadratic subproblem.
     '''
@@ -90,12 +105,12 @@ class DualFeasibleSolution(object):
 
         # store dual variables
         self.variables = variables
-        self.lam = variables['lam']
-        self.mu = variables['mu']
-        self.nu_lb = variables['nu_lb']
-        self.nu_ub = variables['nu_ub']
-        self.rho = variables['rho']
-        self.sigma = variables['sigma']
+        # self.lam = variables['lam']
+        # self.mu = variables['mu']
+        # self.nu_lb = variables['nu_lb']
+        # self.nu_ub = variables['nu_ub']
+        # self.rho = variables['rho']
+        # self.sigma = variables['sigma']
 
         # store dual objective
         self.objective = objective
@@ -114,7 +129,7 @@ class DualFeasibleSolution(object):
 
         Returns
         -------
-        DualFeasibleSolution
+        DualSolution
             Dual solution extracted from the controller.
         '''
 
@@ -149,4 +164,4 @@ class DualFeasibleSolution(object):
             # get Farkas proof input output
             variables['sigma'] = [np.zeros(ctrl.D.shape[0]) for t in range(ctrl.T)]
 
-        return DualFeasibleSolution(variables, ctrl.qp.dual_objective())
+        return DualSolution(variables, ctrl.qp.dual_objective())
