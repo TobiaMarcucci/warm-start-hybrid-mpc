@@ -18,7 +18,7 @@ class HybridModelPredictiveController(object):
          x_{t+1} = A x_t + B u_t, t = 0, 1, ..., T-1,
          F x_t + G u_t <= h,      t = 0, 1, ..., T-1,
          F_T x_T <= h_T,
-         ub_t binary,             t = 0, 1, ..., T-1,
+         V u_t is binary,         t = 0, 1, ..., T-1,
     '''
 
     def __init__(self, mld, T, objective, terminal_set):
@@ -77,7 +77,7 @@ class HybridModelPredictiveController(object):
 
     def _build_mip(self):
         '''
-        Builds the guorbi qp for the opitmization problem to be solved.
+        Builds the guorbi quadratic program for the optimization problem to be solved.
 
         Returns
         -------
@@ -103,10 +103,8 @@ class HybridModelPredictiveController(object):
             ub = qp.add_variables(self.mld.nub, name='ub_%d'%t)
             u = np.concatenate((uc, ub))
             
-            # bounds on the binaries
-            # inequalities must be stated as expr <= num to get negative duals
-            # note that num <= expr would be modified to expr => num
-            # and would give positive duals
+            # bounds on the binaries: inequalities must be stated as expr <= num, to get negative duals
+            # (note that num <= expr would be modified to expr => num and would give positive duals)
             qp.add_constraints(-ub, le, [0.]*self.mld.nub, name='nu_lb_%d'%t)
             qp.add_constraints(ub, le, [1.]*self.mld.nub, name='nu_ub_%d'%t)
 
@@ -151,16 +149,25 @@ class HybridModelPredictiveController(object):
         return qp
 
     def _update_mu(self):
+        '''
+        Computes the matrix neeed to compute the shifted value of the multiplier mu_{T-2|1}.
+        In the warm start process, this multiplier is set to mu_{T-2|1} := M mu_{T-1|0}.
+        This function computes the matrix M.
 
-        # if no terminal set
-        n = self.mld.h.size
-        m = self.h_Tm1.size
+        Returns
+        -------
+        M : np.array
+            Matrix for the update of the mutiplier.
+        '''
+
+        # size of the linea programs
+        n = self.mld.h.size # size of mu_{T-2|1}
+        m = self.h_Tm1.size # size of mu_{T-1|0}
 
         # initialize LP, optimization variables, and objective
         lp = BoundedQP()
         mu = lp.add_variables(n, name='mu')
         obj = lp.setObjective(self.mld.h.dot(mu))
-        update_mu = []
 
         # initialize constraints
         lp.add_constraints(self.mld.F.T.dot(mu), eq, [0.]*self.mld.nx, name='x')
@@ -168,29 +175,32 @@ class HybridModelPredictiveController(object):
         lp.add_constraints(mu, ge, [0.]*n)
 
         # loop thorugh the columns of the rhs
+        M = []
         for i in range(m):
 
-            # set rhs constraints
+            # select the ith column of F_{T-1} and G_{T-1}
             lp.set_constraint_rhs('x', self.F_Tm1[i])
             lp.set_constraint_rhs('u', self.G_Tm1[i])
 
             # get columnn of M
             lp.optimize()
-            update_mu.append(lp.primal_optimizer('mu'))
+            M.append(lp.primal_optimizer('mu'))
 
-        return np.vstack(update_mu).T
+        return np.vstack(M).T
 
-    def _solve_subproblem(self, x0, identifier):
+    def _solve_subproblem(self, x0, identifier, cutoff=None):
         '''
-        Solves the QP relaxation uniquely indentified by its identifier for the given initial state.
+        Solves the QP relaxation indentified by the identifier for the given initial state.
 
         Parameters
         ----------
         x0 : np.array
             Initial state of the system.
         identifier : dict
-            Dictionary containing the values for some of the binaries.
-            Pass an empty dictionary to reset the bounds of the binaries to 0 and 1.
+            Dictionary containing the values of selected binaries.
+        cutoff : float
+            Objective threshold above which the solution of the problem can be terminated.
+            (Not used at the moment.)
 
         Returns
         -------
@@ -203,7 +213,7 @@ class HybridModelPredictiveController(object):
         self._set_bounds_binaries(identifier)
 
         # run the optimization and initialize the result
-        self.qp.optimize()
+        self.qp.optimize() # TODO: use cutoff here
 
         return SubproblemSolution.from_controller(self)
 
@@ -219,8 +229,8 @@ class HybridModelPredictiveController(object):
         Parameters
         ----------
         identifier : dict
-            Dictionary containing the values for some of the binaries.
-            Pass an empty dictionary to reset the bounds of the binaries to 0 and 1.
+            Dictionary containing the values of selected binaries.
+            Pass an empty dictionary to reset the bounds of the binaries to [0, 1].
         '''
 
         # loop over the time horizon
@@ -241,68 +251,206 @@ class HybridModelPredictiveController(object):
         Parameters
         ----------
         x0 : np.array
-            Initial state of the system.
+            Current state of the system.
 
         Returns
         -------
-        sol : dict
-            Solution associated with the incumbent node at optimality.
-            (See documentation of the method _solve_subproblem.)
+        primal : PrimalSolution
+            Primal solution associated with the incumbent node at optimality.
             None if problem is infeasible.
-        optimal_leaves : list of instances of Node
+        leaves : list of Node
             Leaves of the branch and bound tree that proved optimality of the returned solution. 
         '''
 
         # generate a solver for the branch and bound algorithm
-        def solver(identifier):
-            solution = self._solve_subproblem(x0, identifier)
-            return solution.integer_feasible, solution.primal.objective, solution
+        def solver(identifier, cutoff):
+            solution = self._solve_subproblem(x0, identifier, cutoff)
+            return solution.primal.objective, solution.primal.binary_feasible, solution
 
         # solve the mixed integer program using branch and bound
-        incumbent, leaves = branch_and_bound(
-            solver,
-            best_first,
-            self.branch_in_chronological_order,
-            **kwargs
-        )
-        uc = incumbent.additional.primal.variables['uc']
-        ub = incumbent.additional.primal.variables['ub']
-        x = incumbent.additional.primal.variables['x']
-        objective = incumbent.additional.primal.objective
+        incumbent, leaves = branch_and_bound(solver, best_first, self._brancher, **kwargs)
 
-        return uc, ub, x, objective, leaves
+        # infeasible problem
+        if incumbent is None:
+            return None, leaves
 
-    def branch_in_chronological_order(self, identifier):
+        # feasible problem
+        return incumbent.extra.primal, leaves
+
+    def _brancher(self, parent):
         '''
-        Heuristic search for the branch and bound algorithm.
+        Given a parent node from the branch and bound tree, generates the children nodes.
+
+        Parameters
+        ----------
+        parent : Node
+            Branch and bound node to be branched.
+
+        Returns
+        -------
+        children : list of Node
+            List of the generated children nodes for the parent node.
+        '''
+
+        # get branch dictionaries from any heuristic
+        branches = branch_in_time(parent.identifier, self.mld.nub)
+
+        # construct a node per branch
+        children = []
+        for branch in branches:
+            
+            # plug parent dual solution in the child objective
+            lb = parent.lb
+            for k, v in branch.items():
+                nu = 'nu_lb' if v == 1 else 'nu_ub' if v == 0 else None
+                lb += parent.extra.dual.variables[nu][k[0]][k[1]]
+
+            # instantiate child solution with no primal and parent dual
+            identifier = {**parent.identifier, **branch}
+            solution = SubproblemSolution(None, parent.extra.dual)
+            children.append(Node(identifier, lb, solution))
+
+        return children
+
+    def _get_interval_binaries(self, identifier):
+        '''
+        Restates the identifier in terms of lower an upper bounds on the binary variables in the problem.
 
         Parameters
         ----------
         identifier : dict
-            Dictionary containing the values for some of the binaries.
-            Pass an empty dictionary to reset the bounds of the binaries to 0 and 1.
+            Dictionary containing the values of selected binaries.
 
         Returns
         -------
-        branches : list of dict
-            List of sub-identifier that, if merged with the identifier of the parent, give the identifier of the children.
+        v_lb : list of numpy arrays
+            Lower bound imposed by the identifier on the binary inputs in the problem.
+        v_ub : list of numpy arrays
+            Upper bound imposed by the identifier on the binary inputs in the problem.
         '''
 
-        # idices of the last binary fixed in time
-        t = max([k[0] for k in identifier.keys()] + [0])
-        index = max([k[1]+1 for k in identifier.keys() if k[0] == t] + [0])
+        # initialize bounds on the binary inputs
+        v_lb = [np.zeros(self.mld.nub) for t in range(self.T)]
+        v_ub = [np.ones(self.mld.nub) for t in range(self.T)]
 
-        # try to fix one more ub at time t
-        if index < self.mld.nub:
-            branches = [{(t,index): 0.}, {(t,index): 1.}]
+        # parse identifier
+        for k, v in identifier.items():
+            v_lb[k[0]][k[1]] = v
+            v_ub[k[0]][k[1]] = v
 
-        # if everything is fixed at time t, move to time t+1
-        else:
-            branches = [{(t+1,0): 0.}, {(t+1,0): 1.}]
+        return v_lb, v_ub
 
-        return branches
+    def construct_warm_start(self, leaves, x0, uc0, ub0, e0):
+        '''
+        Generates the warm start for the MIQP at the next time step.
 
-    def _shift_dual_solution(self, variables, shifted_identifier, x1):
+        Parameters
+        ----------
+        leaves : list of Node
+            Leaves of the branch and bound tree that proved optimality of the previous solution.
+        x0 : np.array
+            Initial state of the system for the problem solved at the last time step.
+        uc0 : np.array
+            Value of the continuous inputs injected in the system at the last time step.
+        ub0 : np.array
+            Value of the bianry inputs injected in the system at the last time step.
+        e0 : np.array
+            Modeling error e0 = x1 - A x0 - B u0 at the last time step.
+
+        Returns
+        -------
+        warm_start : list of Node
+            Nodes to initialize the branch and bound algorithm.
+        '''
+
+        # state update
+        u0 = np.concatenate((uc0, ub0))
+        x1 = self.mld.A.dot(x0) + self.mld.B.dot(u0) + e0
+
+        # create wrm start checking one leaf per time
+        warm_start = []
+        for leaf in leaves:
+            dual = leaf.extra.dual
+
+            # if the identifier of the leaf does not agree with the ub0 drop the leaf
+            if self._retain_leaf(leaf.identifier, ub0):
+                shifted_identifier = {(k[0]-1, k[1]): v for k, v in leaf.identifier.items() if k[0] > 0}
+                shifted_primal = None
+                shifted_dual = self._shift_dual(x1, shifted_identifier, dual.variables)
+                shifted_solution = SubproblemSolution(shifted_primal, shifted_dual)
+
+                # propagate lower bounds if leaf is feasible
+                if not np.isinf(leaf.lb):
+                    shifted_lb = shifted_dual.objective
+                    
+                # if leaf is infeasible
+                else:
+
+                    # elements to check if it could now be feasible
+                    pi = self._get_pi(x0, u0, leaf.identifier, dual.variables, shifted_dual.variables)
+                    lhs = dual.variables['lam'][1]
+                    rhs = dual.objective + sum(pi)
+
+                    # still infeasible
+                    if lhs.dot(e0) < rhs:
+                        shifted_lb = np.inf
+
+                    # maybe feasible
+                    else:
+                        shifted_lb = 0.
+
+                # add new node to the list for the warm start
+                warm_start.append(Node(shifted_identifier, shifted_lb, shifted_solution))
+
+        return warm_start
+
+    @staticmethod
+    def _retain_leaf(identifier, ub0):
+        '''
+        Given the identifier of a leaf, it checks it agrees with the binary action ub0.
+
+        Parameters
+        ----------
+        identifier : dict
+            Identifier of the leaf to be checked.
+        ub0 : np.array
+            Binary input of the MLD system.
+
+        Returns
+        -------
+        retain : Bool
+            True if the leaf can be reatained, Flase if it must be dropped.
+        '''
+
+        # retain until proven otherwise
+        retain = True
+        for k, v in identifier.items():
+
+            # check if the identifier agrees with the input variable at time zero
+            if k[0] == 0 and not np.isclose(v, ub0[k[1]]):
+                retain = False
+                break
+
+        return retain
+
+    def _shift_dual(self, x1, shifted_identifier, variables):
+        '''
+        Shifts a dual solution from one time step to the next.
+
+        Parameters
+        ----------
+        x1 : np.array
+            Value of the initial state for the shifted problem.
+        shifted_identifier : dict
+            Identifier of the shifted subproblem.
+        variables : dict
+            Dictionary containing the dual variables to be shifted in time.
+            
+        Returns
+        -------
+        shifted_dual : DualSolution
+            Dual feasible solution of rthe shifted problem.
+        '''
 
         # initialize shifted dual variables
         shifted_variables = {}
@@ -319,23 +467,23 @@ class HybridModelPredictiveController(object):
             shifted_variables[k].append(0. * variables[k][-1])
 
         # new dual objective
-        shifted_objective = self._evaluate_dual_solution(shifted_variables, shifted_identifier, x1)
+        shifted_objective = self._evaluate_dual(x1, shifted_identifier, shifted_variables)
+        shifted_objective = max(shifted_objective, 0.)
 
         return DualSolution(shifted_variables, shifted_objective)
 
-    def _evaluate_dual_solution(self, variables, identifier, x0):
+    def _evaluate_dual(self, x0, identifier, variables):
         '''
         Given a dual solution, returns it cost.
 
         Parameters
         ----------
-        variables : dict
-            Dictionary containing the dual solution of the subproblem.
-            Each one of these is a list (ordered in time) of numpy arrays.
-        identifier : dict
-            Dictionary containing the values for some of the binaries.
         x0 : np.array
             Initial state of the system.
+        identifier : dict
+            Dictionary containing the values of selected binaries.
+        variables : dict
+            Dictionary containing the dual solution to be evaluated.
 
         Returns
         -------
@@ -352,7 +500,7 @@ class HybridModelPredictiveController(object):
         objective -= variables['lam'][0].dot(x0)
 
         # cost bounds on binaries
-        v_lb, v_ub = self._get_bounds_on_binaries(identifier)
+        v_lb, v_ub = self._get_interval_binaries(identifier)
         objective += sum(v_lb[t].dot(vt) for t, vt in enumerate(variables['nu_lb']))
         objective -= sum(v_ub[t].dot(vt) for t, vt in enumerate(variables['nu_ub']))
 
@@ -362,101 +510,78 @@ class HybridModelPredictiveController(object):
 
         return objective
 
-    def _get_bounds_on_binaries(self, identifier):
+    def _get_pi(self, x0, u0, identifier, variables, shifted_variables):
         '''
-        Restates the identifier in terms of lower an upper bounds on the binary variables in the problem.
+        Evaluates the terms pi3, pi5, pi7 needed to check if a subproblem is still infeasible after shifting.
 
         Parameters
         ----------
+        x0 : np.array
+            Initial state of the system.
+        u0 : np.array
+            Input injected in the system.
         identifier : dict
-            Dictionary containing the values for some of the binaries.
-            Pass an empty dictionary to reset the bounds of the binaries to 0 and 1.
+            Dictionary containing the values of selected binaries.
+        variables : dict
+            Dictionary containing the dual solution of the subproblem already solved.
+        shifted_variables : dict
+            Dictionary containing the dual feasible solution of the shifted subproblem.
 
         Returns
         -------
-        v_lb : list of numpy arrays
-            Lower bound imposed by the identifier on the binary inputs in the problem.
-        v_ub : list of numpy arrays
-            Upper bound imposed by the identifier on the binary inputs in the problem.=
+        pi : list of float
+            Value of pi3, pi5, and pi7.
+            (See paper for the meaning of these.)
         '''
 
-        # initialize bounds on the binary inputs
-        v_lb = [np.zeros(self.mld.nub) for t in range(self.T)]
-        v_ub = [np.ones(self.mld.nub) for t in range(self.T)]
+        # cost of the complementarity slackness
+        v_lb, v_ub = self._get_interval_binaries(identifier)
+        residuals = {
+            'mu': self.mld.F.dot(x0) + self.mld.G.dot(u0) - self.mld.h,
+            'nu_lb': v_lb[0] - self.mld.V.dot(u0),
+            'nu_ub': self.mld.V.dot(u0) - v_ub[0]
+        }
+        pi3 = - sum(residual.dot(variables[k][0]) for k, residual in residuals.items())
 
-        # parse identifier
-        for k, v in identifier.items():
-            v_lb[k[0]][k[1]] = v
-            v_ub[k[0]][k[1]] = v
+        # cost of the terminal cost
+        pi5 = .25 * np.linalg.norm(variables['rho'][-1])**2 - \
+               .25 * np.linalg.norm(shifted_variables['rho'][-2])**2
 
-        return v_lb, v_ub
+        # cost of the terminal constraint
+        pi7 = self.h_Tm1.dot(variables['mu'][-1]) - \
+               self.mld.h.dot(shifted_variables['mu'][-2])
 
-    def construct_warm_start(self, leaves, x0, uc0, ub0, e0):
+        return pi3, pi5, pi7
 
-        # needed for a (redundant) check
-        u0 = np.concatenate((uc0, ub0))
-        x1 = self.mld.A.dot(x0) + self.mld.B.dot(u0) + e0
+def branch_in_time(identifier, nub):
+    '''
+    Branching heuristic search for the branch and bound algorithm.
+    Select the children nodes proceeding in chronological order.
 
-        # initialize nodes for warm start
-        warm_start = []
+    Parameters
+    ----------
+    identifier : dict
+        Dictionary containing the values of selected binaries.
+        Pass an empty dictionary to reset the bounds of the binaries to 0 and 1.
+    nub : int
+        Number of binary inputs in the MLD system.
 
-        # check each on of the optimal leaves
-        for l in leaves:
+    Returns
+    -------
+    branches : list of dict
+        List of sub-identifier that, if merged with the identifier of the parent, give the identifier of the children.
+    '''
 
-            # if the identifier of the leaf does not agree with the stage_variables drop the leaf
-            if self._retain_leaf(l.identifier, ub0):
-                shifted_identifier = self._shift_identifier(l.identifier)
-                print(vars(l))
-                dual = self._shift_dual_solution(l.additional.dual.variables, shifted_identifier, x1)
+    # idices of the last binary fixed in time
+    t = max([k[0] for k in identifier.keys()] + [0])
+    index = max([k[1]+1 for k in identifier.keys() if k[0] == t] + [0])
 
-                # propagate lower bounds if leaf is feasible
-                if not np.isinf(l.lb):
-                    primal = None
-                    lb = dual.objective
-                    
-                # propagate infeasibility if leaf is still infeasible
-                else:
-                    v_lb, v_ub = self._get_bounds_on_binaries(l.identifier)
-                    multipliers = l.additional.dual.variables
-                    lam1 = l.additional.dual.variables['lam'][1]
-                    pi_3 = - (self.mld.F.dot(x0) + self.mld.G.dot(u0) - self.mld.h).dot(multipliers['mu'][0]) + \
-                           - (v_lb[0] - self.mld.V.dot(u0)).dot(multipliers['nu_lb'][0]) + \
-                           - (self.mld.V.dot(u0) - v_ub[0]).dot(multipliers['nu_ub'][0])
-                    pi_5 = .25 * np.linalg.norm(multipliers['rho'][-1])**2 - \
-                           .25 * np.linalg.norm(dual.variables['rho'][-2])**2
-                    pi_7 = self.h_Tm1.dot(multipliers['mu'][-1]) - self.mld.h.dot(dual.variables['mu'][-2])
+    # try to fix one more ub at time t
+    if index < nub:
+        branches = [{(t,index): 0.}, {(t,index): 1.}]
 
-                    if multipliers['lam'][1].dot(e0) < l.additional.dual.objective + pi_3 + pi_5 + pi_7:
-                        primal = PrimalSolution.infeasible(self.T)
-                        lb = np.inf
-                    else:
-                        primal = None
-                        lb = - np.inf
+    # if everything is fixed at time t, move to time t+1
+    else:
+        branches = [{(t+1,0): 0.}, {(t+1,0): 1.}]
 
-                # add new node to the list for the warm start
-                integer_feasible = None
-                solution = SubproblemSolution(primal, dual, integer_feasible)
-                node = Node(shifted_identifier, lb=lb, additional=solution)
-                warm_start.append(node)
-
-        return warm_start
-
-    @staticmethod
-    def _retain_leaf(identifier, ub0):
-        '''
-        '''
-
-        # retain until proven otherwise
-        retain = True
-        for k, v in identifier.items():
-
-            # check if the identifier agrees with the input variable at time zero
-            if k[0] == 0 and not np.isclose(v, ub0[k[1]]):
-                retain = False
-                break
-
-        return retain
-
-    @staticmethod
-    def _shift_identifier(identifier):
-        return {(k[0]-1, k[1]): v for k, v in identifier.items() if k[0] > 0}
+    return branches

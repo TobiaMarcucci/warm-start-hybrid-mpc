@@ -3,12 +3,16 @@ import numpy as np
 
 class SubproblemSolution(object):
 
-    def __init__(self, primal, dual, integer_feasible):
+    def __init__(self, primal, dual):
+        '''
+        Parameters
+        ----------
+        primal : PrimalSolution
+        dual : DualSolution
+        '''
 
-        # store data
         self.primal = primal
         self.dual = dual
-        self.integer_feasible = integer_feasible
 
     @staticmethod
     def from_controller(controller):
@@ -26,33 +30,31 @@ class SubproblemSolution(object):
             Primal-dual solution extracted from the controller.
         '''
 
-        # organize primal and dual solutions
         primal = PrimalSolution.from_controller(controller)
         dual = DualSolution.from_controller(controller)
 
-        # check if integer_feasible
-        rhs = controller.qp.get_constraint_rhs
-        lb = np.concatenate([rhs('nu_lb_%d'%t) for t in range(controller.T)])
-        ub = np.concatenate([rhs('nu_ub_%d'%t) for t in range(controller.T)])
-        integer_feasible = np.array_equal(lb, -ub)
-
-        return SubproblemSolution(primal, dual, integer_feasible)
+        return SubproblemSolution(primal, dual)
 
 class PrimalSolution(object):
     '''
-    Dual feasible (not necessarily optimal) solution of the quadratic subproblem.
+    Primal feasible (not necessarily optimal) solution of the quadratic subproblem.
     '''
 
-    def __init__(self, variables, objective):
+    def __init__(self, variables, objective, binary_feasible):
+        '''
+        Parameters
+        ----------
+        variables : dict
+            Feasible optimization variables of the primal problem.
+        objective : float
+            Cost of the feasible solution.
+        binary_feasible : bool
+            True if the passed solution is binary feasible, False otherwise.
+        '''
 
-        # store primal variables
         self.variables = variables
-        # self.x = variables['x']
-        # self.uc = variables['uc']
-        # self.ub = variables['ub']
-
-        # store primal objective
         self.objective = objective
+        self.binary_feasible = binary_feasible
 
     @staticmethod
     def from_controller(controller):
@@ -79,21 +81,27 @@ class PrimalSolution(object):
         for k in ['uc', 'ub']:
             variables[k] = [opt('%s_%d'%(k,t)) for t in range(controller.T)]
 
-        return PrimalSolution(variables, controller.qp.primal_objective())
+        # check if binary feasible
+        rhs = controller.qp.get_constraint_rhs
+        lb = np.concatenate([rhs('nu_lb_%d'%t) for t in range(controller.T)])
+        ub = np.concatenate([rhs('nu_ub_%d'%t) for t in range(controller.T)])
+        binary_feasible = np.array_equal(lb, -ub)
 
-    @staticmethod
-    def infeasible(T):
+        return PrimalSolution(variables, controller.qp.primal_objective(), binary_feasible)
 
-        # store primal variables
-        variables = {}
-        variables['x'] = [None for t in range(T)]
-        variables['uc'] = [None for t in range(T-1)]
-        variables['ud'] = [None for t in range(T-1)]
+    # @staticmethod
+    # def infeasible(T):
 
-        # store primal objective
-        objective = np.inf
+    #     # store primal variables
+    #     variables = {}
+    #     variables['x'] = [None for t in range(T)]
+    #     variables['uc'] = [None for t in range(T-1)]
+    #     variables['ud'] = [None for t in range(T-1)]
 
-        return PrimalSolution(variables, objective)
+    #     # store primal objective
+    #     objective = np.inf
+
+    #     return PrimalSolution(variables, objective)
 
 
 class DualSolution(object):
@@ -102,17 +110,16 @@ class DualSolution(object):
     '''
 
     def __init__(self, variables, objective):
-
-        # store dual variables
+        '''
+        Parameters
+        ----------
+        variables : dict
+            Feasible optimization variables of the dual problem.
+        objective : float
+            Cost of the feasible solution if feasible, cost of the Farkas' if infeasible.
+        '''
+        
         self.variables = variables
-        # self.lam = variables['lam']
-        # self.mu = variables['mu']
-        # self.nu_lb = variables['nu_lb']
-        # self.nu_ub = variables['nu_ub']
-        # self.rho = variables['rho']
-        # self.sigma = variables['sigma']
-
-        # store dual objective
         self.objective = objective
 
     @staticmethod
@@ -144,7 +151,7 @@ class DualSolution(object):
         for k in ['mu', 'nu_lb', 'nu_ub']:
             variables[k] = [dopt('%s_%d'%(k,t)) for t in range(ctrl.T)]
 
-        # auxiliary multipliers, if feasible
+        # auxiliary multipliers, if primal feasible
         if ctrl.qp.status == 2:
 
             # stage multipliers
@@ -154,7 +161,7 @@ class DualSolution(object):
             # terminal multipliers
             variables['rho'].append(2*ctrl.C_T.dot(popt('x_%d'%ctrl.T)))
 
-        # auxiliary multipliers, if infeasible
+        # auxiliary multipliers, if primal infeasible
         else:
 
             # get Farkas proof state output
@@ -165,3 +172,7 @@ class DualSolution(object):
             variables['sigma'] = [np.zeros(ctrl.D.shape[0]) for t in range(ctrl.T)]
 
         return DualSolution(variables, ctrl.qp.dual_objective())
+
+    # @staticmethod
+    # def unbounded():
+    #     pass

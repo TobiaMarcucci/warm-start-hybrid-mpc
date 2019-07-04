@@ -9,32 +9,28 @@ class Node(object):
     Node of the branch and bound tree.
     '''
 
-    def __init__(self, branch, parent=None, lb=-np.inf, additional=None):
+    def __init__(self, identifier, lb=-np.inf, extra=None):
         '''
         A node is uniquely identified by its identifier.
-        The identifier must be a dictionary.
-        The identifier of the node is given by the union of the identifier of its partent and the branch dictionary.
+        It is required to provide a lower bound on the objective of the node, this can also be -np.inf.
+        The attirbute extra can contain any info necessary to determine the lower bound, and any extra data we want to store in the node.
 
         Parameters
         ----------
-        branch : dict
-            Sub-identifier that merged with the identifier of the parent gives the identifier of the child.
-        parent : Node or None
-            Parent node in the branch and bound tree.
-            The parent of the root node is None.
+        identifier : dict
+            Identifier of the node: union of the identifier of its partent and the branch dict.
         lb : float or +-np.inf
-            Lower bound on the score of the node provided by the user (useful in case of warm start).
-        additional : anything
-            Any additional info that must be stored in a node.
+            Lower bound on the optimal value of the node (useful in case of warm start).
+        extra : unspecified
+            extra data to be stored in the node.
         '''
 
-        # store data
-        self.identifier = branch if parent is None else {**branch, **parent.identifier}
-        self.lb = lb if parent is None else max(lb, parent.lb)
-        self.additional = additional
-        self.integer_feasible = None
+        self.identifier = identifier
+        self.lb = lb
+        self.extra = extra
+        self.binary_feasible = None
 
-    def solve(self, solver):
+    def solve(self, solver, cutoff=None):
         '''
         Solves the subproblem for this node.
 
@@ -43,13 +39,15 @@ class Node(object):
         solver : function
             Function that given the identifier of the node solves its subproblem.
             The solver must return the follwoing.
-            integer_feasible (bool): True if the subproblem is a feasible solution to the combinatorial problem, False if not.
-            lb (float or np.inf): score of the subproblem (np.inf if infeasible).
-            additional: any data we want to retrieve after the solution.
+            lb (float or np.inf): objective of the subproblem (np.inf if infeasible).
+            binary_feasible (bool): True if the subproblem is a feasible solution to the combinatorial problem, False if not.
+            extra: any data we want to retrieve after the solution.
+        cutoff : float
+            Value above which the node can be pruned.
         '''
 
-        # solve subproblem (overwrites self.lb and self.additional)
-        [self.integer_feasible, self.lb, self.additional] = solver(self.identifier)
+        # solve subproblem (overwrites some of the attributes)
+        [self.lb, self.binary_feasible, self.extra] = solver(self.identifier, cutoff)
 
 class Printer(object):
     '''
@@ -58,7 +56,7 @@ class Printer(object):
 
     def __init__(self, printing_period):
         '''
-        Sores the printing_period and initializes the internal state.
+        Stores the printing_period and initializes the internal state.
 
         Parameters
         ----------
@@ -109,7 +107,7 @@ class Printer(object):
             Root nodes of the branch and bound tree.
         '''
 
-        print('Loaded warm start with %d nodes.' % len(warm_start), end='')
+        print('Loaded warm start with %d nodes.' % len(warm_start), end=' ')
         print('Lower bound from warm start is %.3f.' % min([n.lb for n in warm_start]))
 
     def _first_row(self, tol):
@@ -122,7 +120,8 @@ class Printer(object):
             Nonnegative tolerance on the convergence of the branch and bound.
         '''
 
-        print('Optimality tolerance set to %.2e.'%tol)
+        if tol != 0.:
+            print('Branch an bound tolerance set to %.2e.\n'%tol)
         print('|', end='')
         print('Updates'.center(self._column_width) + '|', end='')
         print('Time (s)'.center(self._column_width) + '|', end='')
@@ -250,7 +249,7 @@ class Drawer(object):
                 label +=  '\nLower bound: %.3f' % node.lb + '\n'
                 self.graph.add_node(node.identifier, color='green', label=label)
 
-    def update(self, node, threshold):
+    def update(self, node, cutoff):
         '''
         Adds a node to the tree.
 
@@ -258,7 +257,7 @@ class Drawer(object):
         ----------
         node : instance of Node
             Leaf to be added to the tree.
-        threshold : float or np.inf
+        cutoff : float or np.inf
             Difference of the best upper bound found so far and the solution tolerance.
             What happened in the iteration: 'pruning', 'solution_update', 'branching'.
         '''
@@ -267,9 +266,9 @@ class Drawer(object):
         if self.label is not None:
 
             # node color (based on the pruning criteria)
-            if node.lb >= threshold: # pruning
+            if node.lb >= cutoff: # pruning
                 color = 'red'
-            elif node.integer_feasible: # solution update
+            elif node.binary_feasible: # solution update
                 color = 'blue'
             else: # branching
                 color = 'black'
@@ -342,14 +341,14 @@ class Drawer(object):
         '''
 
         # loop to find parent node in the graphviz tree
-        for i in range(1, len(identifier)+1):
+        for i in range(len(identifier)):
 
             # guess the parent removing last elements from the identifier
-            parent_identifier = dict(list(identifier.items())[i:])
+            parent_identifier = dict(list(identifier.items())[:-i-1])
             if self.graph.has_node(parent_identifier):
 
                 # if correct get also the branch and return
-                branch = dict(list(identifier.items())[:i])
+                branch = dict(list(identifier.items())[-i-1:])
                 return parent_identifier, branch
 
         # otherwise it is a root node
@@ -389,25 +388,23 @@ def branch_and_bound(
         Function that given the identifier of the node solves its subproblem.
         (See the docs in the solve method of the Node class.)
     candidate_selection : function
-        Function that given a list of nodes and the current incumbent node picks the subproblem (node) to solve next.
+        Function that given a list of nodes picks the subproblem (node) to solve next.
     brancher : function
-        Function that given the identifier of the (solved) candidate node, returns a branch (dict) for each children.
+       Function that given the working node, returns the list of its children (instances of Node themselves).
     tol : float
-            Nonnegative tolerance on the convergence of the branch and bound.
+        Nonnegative tolerance on the convergence of the branch and bound.
     warm_start : list of Nodes
-            Root nodes of the branch and bound tree.
+        Root nodes of the branch and bound tree.
     printing_period : float or None
         Period in seconds for printing the status of the solver.
-        Set it ot None to shut the log.
+        Set it ot None to shut the log down.
     draw_label : string
         Name of the graph and the pdf file.
 
     Returns
     -------
-    additional : unpecified
-        Generic container of the data to keep from the solution of the incumbent node.
-        It is the solution output provided by solver function when applied to
-        the incumbent node.
+    incumbent : Node
+        Leaf node which contains the optimal solution.
     leaves : list of nodes
         Leaf nodes of the branch and bound tree at convergence.
     '''
@@ -432,26 +429,27 @@ def branch_and_bound(
 
         # selection and solution of candidate node
         working_node = candidate_selection(candidate_nodes)
-        working_node.solve(solver)
+        cutoff = ub - tol
+        working_node.solve(solver, cutoff)
 
         # pruning
-        if working_node.lb >= ub - tol:
+        if working_node.lb >= cutoff:
             pass
 
         # solution update
-        elif working_node.integer_feasible:
+        elif working_node.binary_feasible:
             incumbent = working_node
             ub = working_node.lb
             
         # branching
         else:
-            children = [Node(branch, parent=working_node) for branch in brancher(working_node.identifier)]
+            children = brancher(working_node)
             leaves.remove(working_node)
             leaves.extend(children)
 
         # printing and drawing
         printer.update(leaves, ub)
-        drawer.update(working_node, ub-tol)
+        drawer.update(working_node, cutoff)
 
     # printing and drawing
     printer.finalize()
