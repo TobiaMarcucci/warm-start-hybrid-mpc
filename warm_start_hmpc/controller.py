@@ -56,7 +56,7 @@ class HybridModelPredictiveController(object):
         self.qp = self._build_mip()
 
         # warm start construction
-        self.update = {
+        self._update = {
             'mu': self._update_mu(),
             'rho': np.linalg.pinv(self.C.T).dot(self.C_T.T)
         }
@@ -67,13 +67,18 @@ class HybridModelPredictiveController(object):
         '''
 
         # weight matrices
-        assert self.C.shape[1] == self.mld.nx
-        assert self.D.shape[1] == self.mld.nu
-        assert self.C_T.shape[1] == self.mld.nx
+        if self.C.shape[1] != self.mld.nx:
+            raise ValueError('Matrix C has wrong number of columns.')
+        if self.D.shape[1] != self.mld.nu:
+            raise ValueError('Matrix D has wrong number of columns.')
+        if self.C_T.shape[1] != self.mld.nx:
+            raise ValueError('Matrix C_T has wrong number of columns.')
 
         # terminal constraint
-        assert self.F_Tm1.shape[0] == self.h_Tm1.size
-        assert self.G_Tm1.shape[0] == self.h_Tm1.size
+        if self.F_Tm1.shape[0] != self.h_Tm1.size:
+            raise ValueError('Terminal-set matrices have wrong number of rows.')
+        if self.G_Tm1.shape[0] != self.h_Tm1.size:
+            raise ValueError('Terminal-set matrices have wrong number of rows.')
 
     def _build_mip(self):
         '''
@@ -184,7 +189,10 @@ class HybridModelPredictiveController(object):
 
             # get columnn of M
             lp.optimize()
-            M.append(lp.primal_optimizer('mu'))
+            mu_i = lp.primal_optimizer('mu')
+            if mu_i is None:
+                raise ValueError('The conic hull of [F G] does not contain the one of [F_Tm1 G_Tm1].')
+            M.append(mu_i)
 
         return np.vstack(M).T
 
@@ -210,14 +218,14 @@ class HybridModelPredictiveController(object):
 
         # set initial conditions
         self.qp.set_constraint_rhs('lam_0', x0)
-        self._set_bounds_binaries(identifier)
+        self._set_bound_binaries(identifier)
 
         # run the optimization and initialize the result
         self.qp.optimize() # TODO: use cutoff here
 
         return SubproblemSolution.from_controller(self)
 
-    def _set_bounds_binaries(self, identifier):
+    def _set_bound_binaries(self, identifier):
         '''
         Sets the lower and upper bounds of the binary optimization variables
         in the problem to the values passed in the identifier.
@@ -243,6 +251,34 @@ class HybridModelPredictiveController(object):
             # set bounds
             self.qp.set_constraint_rhs('nu_lb_%d'%t, lb_t)
             self.qp.set_constraint_rhs('nu_ub_%d'%t, ub_t)
+
+    def _get_bound_binaries(self, identifier):
+        '''
+        Restates the identifier in terms of lower an upper bounds on the binary variables in the problem.
+
+        Parameters
+        ----------
+        identifier : dict
+            Dictionary containing the values of selected binaries.
+
+        Returns
+        -------
+        ub_lb : list of numpy arrays
+            Lower bound imposed by the identifier on the binary inputs in the problem.
+        ub_ub : list of numpy arrays
+            Upper bound imposed by the identifier on the binary inputs in the problem.
+        '''
+
+        # initialize bounds on the binary inputs
+        ub_lb = [np.zeros(self.mld.nub) for t in range(self.T)]
+        ub_ub = [np.ones(self.mld.nub) for t in range(self.T)]
+
+        # parse identifier
+        for k, v in identifier.items():
+            ub_lb[k[0]][k[1]] = v
+            ub_ub[k[0]][k[1]] = v
+
+        return ub_lb, ub_ub
 
     def feedforward(self, x0, **kwargs):
         '''
@@ -311,34 +347,6 @@ class HybridModelPredictiveController(object):
             children.append(Node(identifier, lb, solution))
 
         return children
-
-    def _get_interval_binaries(self, identifier):
-        '''
-        Restates the identifier in terms of lower an upper bounds on the binary variables in the problem.
-
-        Parameters
-        ----------
-        identifier : dict
-            Dictionary containing the values of selected binaries.
-
-        Returns
-        -------
-        v_lb : list of numpy arrays
-            Lower bound imposed by the identifier on the binary inputs in the problem.
-        v_ub : list of numpy arrays
-            Upper bound imposed by the identifier on the binary inputs in the problem.
-        '''
-
-        # initialize bounds on the binary inputs
-        v_lb = [np.zeros(self.mld.nub) for t in range(self.T)]
-        v_ub = [np.ones(self.mld.nub) for t in range(self.T)]
-
-        # parse identifier
-        for k, v in identifier.items():
-            v_lb[k[0]][k[1]] = v
-            v_ub[k[0]][k[1]] = v
-
-        return v_lb, v_ub
 
     def construct_warm_start(self, leaves, x0, uc0, ub0, e0):
         '''
@@ -463,7 +471,7 @@ class HybridModelPredictiveController(object):
         # shift backwards by one, append optimal update and zero
         for k in ['mu', 'rho']:
             shifted_variables[k] = [v for v in variables[k][1:-1]]
-            shifted_variables[k].append(self.update[k].dot(variables[k][-1]))
+            shifted_variables[k].append(self._update[k].dot(variables[k][-1]))
             shifted_variables[k].append(0. * variables[k][-1])
 
         # new dual objective
@@ -500,9 +508,9 @@ class HybridModelPredictiveController(object):
         objective -= variables['lam'][0].dot(x0)
 
         # cost bounds on binaries
-        v_lb, v_ub = self._get_interval_binaries(identifier)
-        objective += sum(v_lb[t].dot(vt) for t, vt in enumerate(variables['nu_lb']))
-        objective -= sum(v_ub[t].dot(vt) for t, vt in enumerate(variables['nu_ub']))
+        ub_lb, ub_ub = self._get_bound_binaries(identifier)
+        objective += sum(ub_lb[t].dot(vt) for t, vt in enumerate(variables['nu_lb']))
+        objective -= sum(ub_ub[t].dot(vt) for t, vt in enumerate(variables['nu_ub']))
 
         # cost mld inequalities
         objective -= sum(self.mld.h.dot(vt) for vt in variables['mu'][:-1])
@@ -535,11 +543,11 @@ class HybridModelPredictiveController(object):
         '''
 
         # cost of the complementarity slackness
-        v_lb, v_ub = self._get_interval_binaries(identifier)
+        ub_lb, ub_ub = self._get_bound_binaries(identifier)
         residuals = {
             'mu': self.mld.F.dot(x0) + self.mld.G.dot(u0) - self.mld.h,
-            'nu_lb': v_lb[0] - self.mld.V.dot(u0),
-            'nu_ub': self.mld.V.dot(u0) - v_ub[0]
+            'nu_lb': ub_lb[0] - self.mld.V.dot(u0),
+            'nu_ub': self.mld.V.dot(u0) - ub_ub[0]
         }
         pi3 = - sum(residual.dot(variables[k][0]) for k, residual in residuals.items())
 

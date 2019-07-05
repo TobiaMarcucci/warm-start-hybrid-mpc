@@ -107,8 +107,12 @@ class Printer(object):
             Root nodes of the branch and bound tree.
         '''
 
+        # update internal lower bound
+        self.lb = min([n.lb for n in warm_start])
+
+        # print warm start info
         print('Loaded warm start with %d nodes.' % len(warm_start), end=' ')
-        print('Lower bound from warm start is %.3f.' % min([n.lb for n in warm_start]))
+        print('Lower bound from warm start is %.3f.' % self.lb)
 
     def _first_row(self, tol):
         '''
@@ -245,17 +249,15 @@ class Drawer(object):
 
             # add one root node per time
             for node in warm_start:
-                label = 'Branch: ' + self._indent_identifier(node.identifier)
-                label +=  '\nLower bound: %.3f' % node.lb + '\n'
-                self.graph.add_node(node.identifier, color='green', label=label)
+                self._draw_node(node, 'green')
 
     def update(self, node, cutoff):
         '''
-        Adds a node to the tree.
+        Adds the node that has been splved to the tree.
 
         Parameters
         ----------
-        node : instance of Node
+        node : Node
             Leaf to be added to the tree.
         cutoff : float or np.inf
             Difference of the best upper bound found so far and the solution tolerance.
@@ -272,34 +274,64 @@ class Drawer(object):
                 color = 'blue'
             else: # branching
                 color = 'black'
+            self._draw_node(node, color)
 
-            # node label
-            parent_identifier, branch = self._split_identifier(node.identifier)
-            label = 'Branch: ' + self._indent_identifier(branch) + '\n'
-            label += 'Lower bound: %.3f' % node.lb + '\n'
-
-            # add node to the graphviz tree
-            self.graph.add_node(node.identifier, color=color, label=label)
-
-            # connect node to the parent
-            if parent_identifier is not None:
-                self.graph.add_edge(parent_identifier, node.identifier)
-
-    def finalize(self, incumbent):
+    def finalize(self, incumbent, leaves):
         '''
         Highliths the solution, writes the pdf, and opens the pdf.
 
         Parameters
         ----------
-        incumbent : instance of Node
+        incumbent : Node
             Leaf associated with the optimal solution.
+        leaves : list of nodes
+            Leaf nodes of the branch and bound tree at convergence.
         '''
 
         # continue only if drawing is required
         if self.label is not None:
+            self._draw_remaining_leaves(leaves)
             if incumbent is not None:
                 self._draw_solution(incumbent)
             self._save_and_open()
+
+    def _draw_node(self, node, color):
+        '''
+        Draws the given node with the given color.
+
+        Parameters
+        ----------
+        node : Node
+            Leaf to be added to the tree.
+        color : string
+            Graphviz color.
+        '''
+
+        # node label
+        parent_identifier, branch = self._split_identifier(node.identifier)
+        label = 'Branch: ' + self._indent_identifier(branch) + '\n'
+        label += 'Lower bound: %.3f' % node.lb + '\n'
+
+        # add node to the graphviz tree
+        self.graph.add_node(node.identifier, color=color, label=label)
+
+        # connect node to the parent
+        if parent_identifier is not None:
+            self.graph.add_edge(parent_identifier, node.identifier)
+
+    def _draw_remaining_leaves(self, leaves):
+        '''
+        Draws all the leaves of the tree that have not been drawn before.
+
+        Parameters
+        ----------
+        leaves : list of Node
+            Final leaves of the branch and bound tree.
+        '''
+        
+        for leaf in leaves:
+            if not self.graph.has_node(leaf.identifier):
+                self._draw_node(leaf, 'turquoise')
 
     def _draw_solution(self, incumbent):
         '''
@@ -307,7 +339,7 @@ class Drawer(object):
 
         Parameters
         ----------
-        incumbent : instance of Node
+        incumbent : Node
             Leaf associated with the optimal solution.
         '''
 
@@ -453,7 +485,7 @@ def branch_and_bound(
 
     # printing and drawing
     printer.finalize()
-    drawer.finalize(incumbent)
+    drawer.finalize(incumbent, leaves)
 
     return incumbent, leaves
 
