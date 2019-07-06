@@ -9,8 +9,7 @@ from warm_start_hmpc.mld_system import MLDSystem
 
 class TestController(unittest.TestCase):
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def setUp(self):
         np.random.seed(1)
         
         # system dimensions
