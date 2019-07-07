@@ -10,56 +10,29 @@ from warm_start_hmpc.controller import HybridModelPredictiveController
 
 ### NUMERIC PARAMETERS
 
-# mass cart
-mc = 1.
-
-# mass pole
-mp = 1.   
-
-# length pole
-l  = 1.   
-
-# distance walls from origin
-d  = .5   
-
-# stiffness contacts
-k  = 100. 
-
-# damping contacts
-nu = 30.  
-
-# gravity acceleration
-g  = 10.  
-
-# integration time step
-h  = .05  
+mc = 1. # mass cart
+mp = 1. # mass pole
+l  = 1. # length pole
+d  = .5 # distance walls from origin
+k  = 100.# stiffness contacts
+nu = 30. # damping contacts
+g  = 10. # gravity acceleration
+h  = .05 # integration time step
 
 
 ### SYMBOLIC SYSTEM VARIABLES
 
-# symbolic states
-x = sp.Matrix(sp.symbols('q t qd td'))
-
-# symbolic inputs
-u = sp.Matrix([sp.symbols('u')])
-
-# symbolic forces (left, right)
-f = sp.Matrix([sp.symbols('f')])
-
-# symbolic auxiliary binaries (left, right)
-b = sp.Matrix(sp.symbols('el dam'))
-
-# gather inputs and auxiliaries
-inputs = sp.Matrix([u, f, b])
+x = sp.Matrix(sp.symbols('q t qd td')) # symbolic states
+u = sp.Matrix([sp.symbols('u')]) # symbolic inputs
+f = sp.Matrix([sp.symbols('f')]) # symbolic force
+b = sp.Matrix(sp.symbols('el dam')) # symbolic auxiliary binaries
+inputs = sp.Matrix([u, f, b]) # gather inputs and auxiliaries
 
 
 ### DYNAMICS
 
-# time derivatives
 x2_dot = x[1]*g*mp/mc + u[0]/mc
 x3_dot = x[1]*g*(mc+mp)/(l*mc) + u[0]/(l*mc) + f[0]/(l*mp)
-
-# discretized dynamics
 dynamics = sp.Matrix([
     x[0] + h * x[2],
     x[1] + h * x[3],
@@ -73,16 +46,12 @@ dynamics = sp.Matrix([
 # state bounds
 x_max = np.array([d, np.pi/8., 2., 1.])
 x_min = - x_max
+state_upper_bound = x - x_max.reshape(x_max.size, 1)
+state_lower_bound = x_min.reshape(x_min.size, 1) - x
 
 # input bounds
 u_max = np.array([2.])
 u_min = - u_max
-
-# state constraints
-state_upper_bound = x - x_max.reshape(x_max.size, 1)
-state_lower_bound = x_min.reshape(x_min.size, 1) - x
-
-# input constraints
 input_upper_bound = u - u_max.reshape(u_max.size, 1)
 input_lower_bound = u_min.reshape(u_min.size, 1) - u
 
@@ -126,11 +95,10 @@ constraints = sp.Matrix([
 ])
 
 
-### CONSTRUCT MLD SYSTEM
+### MLD SYSTEM AND CONTROLLER
 
+# mld dynamics
 mld = MLDSystem.from_symbolic(dynamics, constraints, x, inputs, b.shape[0])
-
-### CONTROLLER
 
 # horizon
 T = 40
@@ -144,7 +112,7 @@ objective = [C, D, C_T]
 
 # terminal constraints
 F_T = np.vstack((np.eye(mld.nx), - np.eye(mld.nx)))
-h_T = np.concatenate((x_max, x_max))/1.1
+h_T = np.concatenate((x_max, x_max)) / 1.1
 terminal_set = [F_T, h_T]
 
 # hybrid controller
@@ -161,3 +129,140 @@ solution, leaves = controller.feedforward(x0, printing_period=None)
 
 # solve leaf subproblem
 solution_leaves = [controller._solve_subproblem(leaf.identifier, x0) for leaf in leaves]
+
+# generate warm start
+np.random.seed(1)
+uc0 = solution.variables['uc'][0]
+ub0 = solution.variables['ub'][0]
+e0 = np.random.randn(mld.nx) * .01
+warm_start = controller.construct_warm_start(leaves, x0, uc0, ub0, e0)
+
+# next state
+u0 = np.concatenate((uc0, ub0))
+x1 = mld.A.dot(x0) + mld.B.dot(u0) + e0
+
+
+### HELPER FUNCTIONS FOR THE TESTS
+
+def pairwise_disjoint_cover_of_unit_cube(nodes, n):
+    np.random.seed(1)
+
+    # generate n random vertices of the unit cube
+    is_cover = True
+    for _ in range(n):
+        ub = np.random.randint(0, 2, mld.nub*T)
+        included = 0
+
+        # among the nodes there must be one and only one which containts the vertex
+        for node in nodes:
+            ub_lb, ub_ub = controller._get_bound_binaries(node.identifier)
+            ub_lb = np.concatenate(ub_lb)
+            ub_ub = np.concatenate(ub_ub)
+            if np.min(ub-ub_lb) >= 0. and np.min(ub_ub-ub) >= 0.:
+                included += 1
+
+        # if not covered by a single set, test must fail
+        if included != 1:
+            is_cover = False
+            break
+
+    return is_cover
+
+def plug_in_primal_constraints(variables, identifier):
+
+    # rename primal varibales
+    x = variables['x']
+    uc = variables['uc']
+    ub = variables['ub']
+    u = [np.concatenate((uc[t], ub[t])) for t in range(T)]
+
+    # get bounds for this identifier
+    ub_lb, ub_ub = controller._get_bound_binaries(identifier)
+
+    # initial state constraint
+    zero_terms = []
+    zero_terms.append(x0 - x[0])
+
+    # MLD dynamics
+    x_next = x0
+    for t in range(T):
+        x_next = mld.A.dot(x_next) + mld.B.dot(u[t])
+        zero_terms.append(x_next - x[t+1])
+
+    # MLD constraints
+    nonnegative_terms = []
+    for t in range(T):
+        nonnegative_terms.append(mld.h - mld.F.dot(x[t]) - mld.G.dot(u[t]))
+
+    # binaries constraint
+    for t in range(T):
+        nonnegative_terms.append(ub[t] - ub_lb[t])
+        nonnegative_terms.append(ub_ub[t] - ub[t])
+
+    # terminal constraints
+    nonnegative_terms.append(terminal_set[1] - terminal_set[0].dot(x[T]))
+    
+    return np.concatenate(zero_terms), np.concatenate(nonnegative_terms)
+
+def plug_in_dual_constraints(variables):
+
+    # rename dual varibales
+    rho = variables['rho']
+    lam = variables['lam']
+    sigma = variables['sigma']
+    mu = variables['mu']
+    nu_lb = variables['nu_lb']
+    nu_ub = variables['nu_ub']
+
+    # dual terminal conditions
+    zero_terms = []
+    zero_terms.append(controller.C_T.T.dot(rho[T]) + lam[T])
+
+    # dual dynamics time T-1
+    zero_terms.append(controller.C.T.dot(rho[T-1]) + lam[T-1] \
+	                - mld.A.T.dot(lam[T]) \
+	                + controller.F_Tm1.T.dot(mu[T-1]))
+
+    # dual dynamics at time t
+    for t in range(T-1):
+        zero_terms.append(controller.C.T.dot(rho[t]) + lam[t] \
+	                    - mld.A.T.dot(lam[t+1]) \
+	                    + mld.F.T.dot(mu[t]))
+
+    # dual constraints at time T-1
+    zero_terms.append(controller.D.T.dot(sigma[T-1]) \
+	                - mld.B.T.dot(lam[T]) \
+	                + controller.G_Tm1.T.dot(mu[T-1]) \
+	                + mld.V.T.dot(nu_ub[T-1] - nu_lb[T-1]))
+    # dual cosntraints at time t
+    for t in range(T-1):
+        zero_terms.append(controller.D.T.dot(sigma[t]) \
+	                    - mld.B.T.dot(lam[t+1]) \
+	                    + mld.G.T.dot(mu[t]) \
+	                    + mld.V.T.dot(nu_ub[t] - nu_lb[t]))
+
+    # nonnegativity
+    nonnegative_terms = mu + nu_lb + nu_ub
+
+    return np.concatenate(zero_terms), np.concatenate(nonnegative_terms)
+
+def plug_in_dual_objective(variables, identifier):
+
+    # evaluate quadratic terms
+    objective = 0.
+    for k in ['rho', 'sigma']:
+        objective -= sum(np.linalg.norm(vt)**2 for vt in variables[k]) / 4.
+
+    # cost initial conditions
+    objective -= variables['lam'][0].dot(x1)
+
+    # cost bounds on binaries
+    ub_lb, ub_ub = controller._get_bound_binaries(identifier)
+    objective += sum(ub_lb[t].dot(vt) for t, vt in enumerate(variables['nu_lb']))
+    objective -= sum(ub_ub[t].dot(vt) for t, vt in enumerate(variables['nu_ub']))
+
+    # cost mld inequalities
+    objective -= sum(mld.h.dot(vt) for vt in variables['mu'][:-1])
+    objective -= controller.h_Tm1.dot(variables['mu'][-1])
+
+    return objective
