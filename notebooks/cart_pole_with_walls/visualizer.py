@@ -6,7 +6,7 @@ import meshcat.geometry as g
 import meshcat.transformations as tf
 
 # internal imports
-from dynamics import l, d, h
+from nonlinear_dynamics import l, d
 
 # initialize visualizer
 vis = Visualizer()
@@ -41,7 +41,7 @@ right_wall.set_transform(tf.translation_matrix([0., d, l]))
 def visualize(x):
     cart.set_transform(tf.translation_matrix([0, x[0], 0]))
     pivot.set_transform(tf.rotation_matrix(x[1] + pi/2, [1, 0, 0]))
-def animate(x_list):
-	for xt in x_list:
-	    visualize(xt)
-	    time.sleep(h)
+def animate(x_list, h):
+  for xt in x_list:
+      visualize(xt)
+      time.sleep(h)

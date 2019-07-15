@@ -528,6 +528,38 @@ class HybridModelPredictiveController(object):
 
         return pi
 
+    def feedforward_gurobi(self, x0, gurobi_options={}):
+
+        # set up miqp
+        self.qp.reset()
+        self._set_bound_binaries({})
+        self._set_binaries_type('B')
+        self.qp.set_constraint_rhs('lam_0', x0)
+
+        # set parameters
+        self.qp.Params.OutputFlag = 1
+        for parameter, value in gurobi_options.items():
+            self.qp.setParam(parameter, value)
+
+        # run the optimization
+        self.qp.optimize()
+        x = [self.qp.primal_optimizer('x_%d'%t) for t in range(self.T+1)]
+        objective = self.qp.primal_objective()
+        self._set_binaries_type('C')
+        self.qp.reset()
+
+        # 
+        self.qp.Params.OutputFlag = 0
+        self.qp.Params.InfUnbdInfo = 1
+
+        return x, objective
+
+    def _set_binaries_type(self, type):
+        for t in range(self.T):
+            for ub in self.qp.get_variables('ub_%d'%t):
+                ub.VType = type
+        self.qp.update()
+
 def branch_in_time(identifier, nub):
     '''
     Branching heuristic search for the branch and bound algorithm.

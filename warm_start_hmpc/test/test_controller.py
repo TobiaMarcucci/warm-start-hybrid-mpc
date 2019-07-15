@@ -15,13 +15,27 @@ class TestController(unittest.TestCase):
         for i, M in enumerate([np.eye(cp.mld.nx+1), np.eye(cp.mld.nu+1), np.eye(cp.mld.nx+1)]):
             objective = copy(cp.objective)
             objective[i] = M
-            self.assertRaises(ValueError, HybridModelPredictiveController, cp.mld, cp.T, objective, cp.terminal_set)
+            self.assertRaises(
+                ValueError,
+                HybridModelPredictiveController,
+                cp.mld,
+                cp.T,
+                objective,
+                cp.terminal_set
+                )
 
         # wrong size terminal constraint
         for i, M in enumerate([np.ones((2*cp.mld.nx+1, cp.mld.nx)), np.ones(2*cp.mld.nx+1)]):
             terminal_set = copy(cp.terminal_set)
             terminal_set[i] = M
-            self.assertRaises(ValueError, HybridModelPredictiveController, cp.mld, cp.T, objective, terminal_set)
+            self.assertRaises(
+                ValueError,
+                HybridModelPredictiveController,
+                cp.mld,
+                cp.T,
+                objective,
+                terminal_set
+                )
 
     def test_update(self):
         np.random.seed(1)
@@ -150,7 +164,7 @@ class TestController(unittest.TestCase):
 
     def test_warm_start_vs_cold_start(self):
 
-        # solve with and without warm start
+        # solve with and without warm start and compare optimal value
         solution_ws, _ = cp.controller.feedforward(cp.x1, printing_period=None, warm_start=cp.warm_start)
         solution, _ = cp.controller.feedforward(cp.x1, printing_period=None)
         self.assertEqual(solution_ws.objective, solution.objective)
