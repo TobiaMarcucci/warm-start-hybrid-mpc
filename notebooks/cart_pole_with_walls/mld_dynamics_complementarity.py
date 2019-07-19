@@ -7,254 +7,231 @@ from copy import copy
 # internal imports
 from warm_start_hmpc.mld_system import MLDSystem
 from warm_start_hmpc.utils import sym2mat, unpack_bmat
-from warm_start_hmpc.mcais import mcais, solve_dare
+# from warm_start_hmpc.mcais import mcais, solve_dare
 from warm_start_hmpc.bounded_qp import BoundedQP
 
-'''
-numeric parameters
-'''
+class CartPoleWithWalls(object):
 
-mc = 1. # mass cart
-mp = 1. # mass pole
-l  = 1. # length pole
-d  = .5 # distance walls from origin
-eps = .5 # coefficient of restitution
-g = Matrix([0., -10]) # gravity acceleration
-h_nom = 1./20. # nominal integration step
+    def __init__(self):
 
-'''
-symbolic variables
-'''
+        # physical parameters
+        self.mc = 1. # mass cart
+        self.mp = 1. # mass pole
+        self.l  = 1. # length pole
+        self.d  = .5 # distance walls from origin
+        self.eps = .5 # coefficient of restitution
+        self.h = 1./20. # nominal integration step
+        self.g = Matrix([0., -10]) # gravity acceleration
 
-# state
-[qc, qp, vc, vp] = symbols('q_c q_p v_c v_p')
-q = Matrix([qc, qp])
-v = Matrix([vc, vp])
-x = Matrix([q, v])
+        # bounds
+        self.x_max = np.array([self.d, np.pi/8., 2., 1.])
+        self.x_min = - self.x_max
+        self.fc_max = 2.
+        self.fc_min = - self.fc_max
 
-# inputs
-[fc, fl, fr] = Matrix([symbols('f_c f_l f_r')])
-f = Matrix([fc, fl, fr])
+        # dimensions
+        self.nq = 2
+        self.nv = 2
+        self.nx = self.nq + self.nv
+        self.nu = 1
+        self.nf = 3
 
-# symbolic integration step
-h = symbols('h')
+        # symbolic state
+        [self.qc, self.qp, self.vc, self.vp] = symbols('q_c q_p v_c v_p')
+        self.q = Matrix([self.qc, self.qp])
+        self.v = Matrix([self.vc, self.vp])
+        self.x = Matrix([self.q, self.v])
 
-'''
-equations of motion
-'''
+        # symbolic forces
+        [self.fc, self.fl, self.fr] = Matrix([symbols('f_c f_l f_r')])
+        self.f = Matrix([self.fc, self.fl, self.fr])
 
-# kinematics
-pc = Matrix([qc])
-pp = Matrix([qc-l*sin(qp), l*cos(qp)])
-vc = pc.jacobian(q)*v
-vp = pp.jacobian(q)*v
+        # binary indicators (= 1 if contact)
+        [self.cl, self.cr] = symbols('c_l c_r')
 
-# Lagrangian
-U = - mp*(g.T*pp)
-T = .5*mc*(vc.T*vc) + .5*mp*(vp.T*vp)
-T.simplify()
-L = T - U
+        # symbolic integration step
+        self.h_sym = symbols('h')
 
-# mass matrix
-M = L.jacobian(v).T.jacobian(v)
-M_inv = M.inv()
+        # nominal parameters
+        self.nominal = {
+            self.h_sym: self.h,
+            **{xi: 0. for xi in self.x},
+            **{fi: 0. for fi in self.f},
+            }
 
-# Coriolis, centrifugal, and gravitational terms
-tau = - L.jacobian(v).T.jacobian(q)*v + L.jacobian(q).T
+        # systems model
+        self._kinematics()
+        self._dynamics()
 
-# generalized forces
-Qc = pc.jacobian(q).T * fc
-Qw = pp[0:1,:].jacobian(q).T * (fl - fr)
-# Q = Qc + Qw
+        # compute big Ms for the MLD constraints
+        [self.M_phi, self.M_phi_dot, self.M_fw] = self._bigMs()
 
-# nonlinear dynamics
-# v_dot = M_inv*(tau + Q)
-v_next = v + M_inv * (h * (tau + Qc) + Qw)
-q_next = q + h * v_next
-x_next = Matrix([q_next, v_next])
-x_next_fun = lambdify([x, f, h], x_next, 'numpy')
+        # construct MLD system
+        c = Matrix([self.cl, self.cr])
+        self.mld = MLDSystem.from_symbolic(
+          self.x_next_lin,
+          Matrix(self._mld_constraints()),
+          self.x,
+          Matrix([self.f, c]),
+          c.shape[0]
+          )
 
-'''
-Linearization of the dynamics
-'''
+    def _kinematics(self):
 
-# equilibrium point
-subs = {
-    h: h_nom,
-    **{xi: 0. for xi in x},
-    **{fi: 0. for fi in f},
-    }
+        # positions
+        self.pc = Matrix([self.qc])
+        self.pp = Matrix([
+            self.qc - self.l*sin(self.qp),
+            self.l*cos(self.qp)
+            ])
 
-# linear dynamics
-x_next_lin = x_next.jacobian(x).subs(subs) * x  + \
-             x_next.jacobian(f).subs(subs) * f
-q_next_lin = x_next_lin[:q.shape[0], :]
-v_next_lin = x_next_lin[q.shape[0]:, :]
+        # velocities
+        self.vc = self.pc.jacobian(self.q)*self.v
+        self.vp = self.pp.jacobian(self.q)*self.v
 
-'''
-Gap functions
-'''
+        # gap functions
+        self.phi = {
+            'l': Matrix([self.d + self.pp[0]]),
+            'r': Matrix([self.d - self.pp[0]])
+        }
+        self.phi_fun = {k: lambdify([self.q], v[0,0], 'numpy') for k, v in self.phi.items()}
+        self.phi_lin = {k: self.linearize(self.phi[k], [self.q]) for k in self.phi.keys()}
 
-# gaps
-phi_l = Matrix([d + pp[0]])
-phi_r = Matrix([d - pp[0]])
+        # jacobians
+        self.Phi = {k: v.jacobian(self.q) for k, v in self.phi.items()}
+        self.Phi_nom = {k: v.subs(self.nominal) for k, v in self.Phi.items()}
 
-# functions
-phi_l_fun = lambdify([q], phi_l, 'numpy')
-phi_r_fun = lambdify([q], phi_r, 'numpy')
+    def _dynamics(self):
 
-# jacobians
-Phi_l = phi_l.jacobian(q)
-Phi_r = phi_r.jacobian(q)
-Phi_l_nom = Phi_l.subs(subs)
-Phi_r_nom = Phi_r.subs(subs)
+        # Lagrangian function
+        potential = - self.mp*(self.g.T*self.pp)
+        kinetic = .5 * self.mc * (self.vc.T * self.vc) + \
+                  .5 * self.mp * (self.vp.T * self.vp)
+        lagrangian = kinetic - potential
 
-# linearizations
-phi_l_lin = Phi_l.subs(subs) * q + phi_l.subs(subs)
-phi_r_lin = Phi_r.subs(subs) * q + phi_r.subs(subs)
+        # mass matrix
+        M = lagrangian.jacobian(self.v).T.jacobian(self.v)
+        M_inv = M.inv()
 
-'''
-Contact forces
-'''
+        # Coriolis, centrifugal, and gravitational terms
+        tau = - lagrangian.jacobian(self.v).T.jacobian(self.q) * self.v + \
+                lagrangian.jacobian(self.q).T
 
-# left
-# fl_solved_lin is = mp [0, gh, -(1+e), (1+e)l]
-M_l = (Phi_l * M_inv * Phi_l.T).inv()
-fl_solved = - M_l * ((1+eps) * Phi_l * v + h * Phi_l * M_inv * (tau + Qc))
-fl_solved_fun = lambdify([x, fc, h], fl_solved[0,0], 'numpy')
+        # generalized forces
+        Qc = self.pc.jacobian(self.q).T * self.fc
+        Qw = self.pp[0,:].jacobian(self.q).T * (self.fl - self.fr)
 
-# right
-# fr_solved_lin is = mp [0, -gh, 1+e, -(1+e)l]
-M_r = (Phi_r * M_inv * Phi_r.T).inv()
-fr_solved = - M_r * ((1+eps) * Phi_r * v + h * Phi_r * M_inv*(tau + Qc))
-fr_solved_fun = lambdify([x, fc, h], fr_solved[0,0], 'numpy')
+        # nonlinear dynamics
+        v_next = self.v + M_inv * (self.h_sym * (tau + Qc) + Qw)
+        q_next = self.q + self.h_sym * v_next
+        x_next = Matrix([q_next, v_next])
+        self.x_next_fun = lambdify([self.x, self.f, self.h_sym], x_next, 'numpy')
 
-'''
-Bounds
-'''
+        # linearized dynamics
+        self.x_next_lin = self.linearize(x_next, [self.x, self.f])
+        self.q_next_lin = self.x_next_lin[:self.nq, :]
+        self.v_next_lin = self.x_next_lin[self.nq:, :]
 
-# state bounds
-x_max = np.array([d, np.pi/8., 2., 1.])
-x_min = - x_max
-x_upper_bound = x - x_max.reshape(x_max.size, 1)
-x_lower_bound = x_min.reshape(x_min.size, 1) - x
+        # contact forces with wall
+        v_next_0 = v_next.subs({self.fl: 0., self.fr: 0.})
+        M_reduced = {k: (v * M_inv * v.T).inv() for k, v in self.Phi.items()}
+        f_solved = {k: - M_reduced[k] * self.Phi[k] * (self.eps * self.v + v_next_0) for k in self.phi.keys()}
+        self.f_solved_fun = {k: lambdify([self.x, self.fc, self.h_sym], v[0,0], 'numpy') for k, v in f_solved.items()}
 
-# input bounds
-fc_max = np.array([[2.]])
-fc_min = - fc_max
-fc_upper_bound = Matrix([fc]) - fc_max
-fc_lower_bound = fc_min - Matrix([fc])
+    def _bigMs(self):
 
-# domain
-constraints = [
-    x_upper_bound,
-    x_lower_bound,
-    fc_upper_bound,
-    fc_lower_bound
-    ]
+        M_phi = 2. * self.d + self.x_max[2] + .2
 
-'''
-Complementarity constraints
-'''
+        M_phi_dot = (1+self.eps)*(self.x_max[2] - self.l * self.x_min[3])
 
-# binary indicators (= 1 if contact)
-[cl, cr] = symbols('c_l c_r')
-c = Matrix([cl, cr])
+        M_fw = 30.
 
-# big-M gap
-bigM_gap = 2. * d + x_max[2] + .2
-phi_l_next = Phi_l_nom * q_next_lin + phi_l_lin.subs(subs)
-phi_r_next = Phi_r_nom * q_next_lin + phi_r_lin.subs(subs)
-print(phi_r_next)
-constraints.extend([
-	# phi_l_lin.subs({qi: q_next_lin[i] for i, qi in enumerate(q)}) - \
-	phi_l_next.subs({fl: 0., fr: 0.}) - Matrix([bigM_gap * (1 - cl)]),
-	# phi_r_lin.subs({qi: q_next_lin[i] for i, qi in enumerate(q)}) - \
-	phi_r_next.subs({fl: 0., fr: 0.}) - Matrix([bigM_gap * (1 - cr)])
-    ])
+        return M_phi, M_phi_dot, M_fw
 
-# big-M gap velocity
-bigM_gap_vel = (1+eps)*(x_max[2] - l * x_min[3])
-constraints.extend([
-	- Phi_l_nom * (v_next_lin + eps*v) - Matrix([bigM_gap_vel * (1 - cl)]),
-	- Phi_r_nom * (v_next_lin + eps*v) - Matrix([bigM_gap_vel * (1 - cr)]),
-	Phi_l_nom * (v_next_lin + eps*v) - Matrix([bigM_gap_vel * (1 - cl)]),
-	Phi_r_nom * (v_next_lin + eps*v) - Matrix([bigM_gap_vel * (1 - cr)])
-	])
+    def _mld_constraints(self):
 
-# big-M force
-fl_solved_lin = fl_solved.jacobian(x).subs(subs)
-bigM_f = (fl_solved_lin * Matrix([0, x_max[1], x_min[2], x_max[3]]))[0,0]
-constraints.extend([
-	Matrix([- fl]),
-	Matrix([- fr]),
-	Matrix([fl - bigM_f * cl]),
-	Matrix([fr - bigM_f * cr])
-	])
+        # collect all the MLD constraints
+        constraints = []
 
-'''
-Redundant bounds to make the constraints bounded
-'''
-constraints.extend([
-	Matrix([- cl]),
-	Matrix([- cr]),
-	Matrix([cl - 1.]),
-	Matrix([cr - 1.]),
-	# Matrix([cr + cl - 1]) show be much stronger
-	])
+        # state bounds
+        constraints.append(self.x - self.x_max.reshape(self.nx, 1))
+        constraints.append(self.x_min.reshape(self.nx, 1) - self.x)
 
-'''
-Mixed Logical Dynamical system
-'''
+        # input bounds
+        constraints.append(Matrix([self.fc - self.fc_max]))
+        constraints.append(Matrix([self.fc_min - self.fc]))
 
-# construct MLD system
-mld = MLDSystem.from_symbolic(
-	x_next_lin,
-	Matrix(constraints),
-	x,
-	Matrix([f, c]),
-	c.shape[0]
-	)
+        # organize forces and inidcators
+        f = {'l': self.fl, 'r': self.fr}
+        c = {'l': self.cl, 'r': self.cr}
 
-'''
-Objective function
-'''
+        # indicator binary equal one => collision at next time step
+        q_next_lin_0 = self.q_next_lin.subs({self.fl: 0., self.fr: 0.})
+        self.phi_next_lin = {k: self.Phi_nom[k] * q_next_lin_0 + self.phi_lin[k].subs(self.nominal) for k in self.phi.keys()}
+        for k, v in self.phi_next_lin.items():
+            indicator = Matrix([self.M_phi * (1 - c[k])])
+            constraints.append(v - indicator)
+            indicator = Matrix([10. * c[k]])
+            constraints.append(- v - indicator)
 
-# weight matrices
-C = np.diag([1.,1.,1.,1.]) * h_nom
-D = np.array([[1.]]).T * h_nom
+        # collision at next time step => restitution in the gap velocity
+        dv = self.v_next_lin + self.eps*self.v
+        for k in self.phi.keys():
+            indicator = Matrix([self.M_phi_dot * (1 - c[k])])
+            constraints.append(- self.Phi_nom[k] * dv - indicator)
+            constraints.append(self.Phi_nom[k] * dv - indicator)
 
-# LQR cost to go
-P, K = solve_dare(mld.A, mld.B[:,:1], C.dot(C), D.dot(D))
-C_T = np.linalg.cholesky(P).T
-D = np.hstack((D, np.zeros((1, mld.nu-1))))
-objective = [C, D, C_T]
+        # collision at next time step => positive contact force
+        for k in self.phi.keys():
+            constraints.append(Matrix([- f[k]]))
+            constraints.append(Matrix([f[k] - self.M_fw * c[k]]))
 
-# mcais terminal set
-A_cl = mld.A + mld.B[:,:1].dot(K)
-lhs_cl = mld.F + mld.G[:,:1].dot(K)
-terminal_set = mcais(A_cl, lhs_cl, mld.h, verbose=True)
+        # redundant bounds to make the constraints bounded
+        # the second could be made much stronger as cl + cr <= 1
+        for v in c.values():
+            constraints.append(Matrix([- v]))
+            constraints.append(Matrix([v - 1.]))
 
-# simulation
-def simulate(x, dt, u=np.zeros(1), h_des=.001):
-    T = int(dt/h_des)
-    h = dt/T
-    x_list = [x]
-    for t in range(T):
-    	f = np.array([u[0], 0., 0.])
-    	x_next = x_next_fun(x_list[-1], f, h).flatten()
-
-    	# contact forces
-    	q_next = x_next[:2]
-    	if phi_l_fun(q_next) <= 0.:
-    		f[1] = fl_solved_fun(x_list[-1], u[0], h)
-    	if phi_r_fun(q_next) <= 0.:
-    		f[2] = fr_solved_fun(x_list[-1], u[0], h)
-
-    	x_list.append(x_next_fun(x_list[-1], f, h).flatten())
-    
-    return np.array(x_list), h
+        return constraints
 
 
-def project_in_feasible_set(x):
-    return np.minimum(np.maximum(x, x_min), x_max)
+    def linearize(self, expression, variables):
+
+        # offset term
+        linearization = expression.subs(self.nominal)
+
+        # linear terms
+        for v in variables:
+            linearization += expression.jacobian(v).subs(self.nominal) * v
+
+        return linearization
+
+    def simulate(self, x0, u, dt, h_des=.001):
+
+        # round desired discretization step
+        T = int(dt/h_des)
+        h = dt/T
+
+        # state trajectory
+        x = [x0]
+        for t in range(T):
+
+            # simulate without contact forces
+            f = np.array([u, 0., 0.])
+            x_next = self.x_next_fun(x[-1], f, h).flatten()
+            q_next = x_next[:self.nq]
+
+            # get contact forces if penetration
+            for i, k in enumerate(self.phi.keys()):
+                if self.phi_fun[k](q_next) <= 0.:
+                    f[i+1] = self.f_solved_fun[k](x[-1], u, h)
+
+            # simulate with contact forces
+            x.append(self.x_next_fun(x[-1], f, h).flatten())
+        
+        return np.array(x), h
+
+
+    def project_in_feasible_set(self, x):
+
+        return np.minimum(np.maximum(x, self.x_min), self.x_max)
