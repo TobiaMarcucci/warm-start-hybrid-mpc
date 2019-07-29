@@ -12,7 +12,7 @@ mp = 1. # mass pole
 l  = 1. # length pole
 d  = .5 # distance walls from origin
 stiffness  = 100. # stiffness contacts
-damping = 30. # damping contacts
+damping = 10. # damping contacts
 g  = 10. # gravity acceleration
 g_vec = Matrix([0., -g])
 
@@ -82,47 +82,39 @@ B = rhs.jacobian(f).subs(subs)
 # A.simplify()
 # B.simplify()
 
-'''
-simulator
-'''
-
-# gap functions
-gap = {
-    'l': pp[0] + d,
-    'r': d - pp[0]
-    }
-gap_fun = {k: lambdify([x], v, 'numpy') for k, v in gap.items()}
-
-# contact model
-contact_model = {
-    'l': - stiffness*gap['l'] - damping*vp[0],
-    'r': - stiffness*gap['r'] + damping*vp[0]
-    }
-contact_model_fun = {k: lambdify([x], v, 'numpy') for k, v in contact_model.items()}
-
-# state derivative
-def x_dot(x, fc):
-    forces = [fc]
-    for wall in ['l','r']:
-        if gap_fun[wall](x) > 0. or contact_model_fun[wall](x) < 0.:
-            forces.append(0.)
-        else:
-            forces.append(contact_model_fun[wall](x))
-    return rhs_fun(x, forces).flatten()
-
+# '''
 # simulator
-def simulate(x, dt, fc=0., h_des=.001):
-    T = int(dt/h_des)
-    h = dt/T
-    x_list = [x]
-    for t in range(T):
-        x_list.append(x_list[-1] + h*x_dot(x_list[-1], fc))
-    return np.array(x_list)
+# '''
 
-# import matplotlib.pyplot as plt
-# h_sim = .001
-# T_sim = 5000
-# x_list = simulate(np.array([0.,0.,5.,0.]), T_sim, h_sim, 1.)
-# for i in range(len(x)):
-#     plt.plot(np.linspace(0., T_sim*h_sim, T_sim+1), x_list[:,i])
-# plt.show()
+# # gap functions
+# gap = {
+#     'l': pp[0] + d,
+#     'r': d - pp[0]
+#     }
+# gap_fun = {k: lambdify([x], v, 'numpy') for k, v in gap.items()}
+
+# # contact model
+# contact_model = {
+#     'l': - stiffness*gap['l'] - damping*vp[0],
+#     'r': - stiffness*gap['r'] + damping*vp[0]
+#     }
+# contact_model_fun = {k: lambdify([x], v, 'numpy') for k, v in contact_model.items()}
+
+# # state derivative
+# def x_dot(x, fc):
+#     forces = [fc]
+#     for wall in ['l','r']:
+#         if gap_fun[wall](x) > 0. or contact_model_fun[wall](x) < 0.:
+#             forces.append(0.)
+#         else:
+#             forces.append(contact_model_fun[wall](x))
+#     return rhs_fun(x, forces).flatten()
+
+# # simulator
+# def simulate(x, dt, fc=0., h_des=.001):
+#     T = int(dt/h_des)
+#     h = dt/T
+#     x_list = [x]
+#     for t in range(T):
+#         x_list.append(x_list[-1] + h*x_dot(x_list[-1], fc))
+#     return np.array(x_list)

@@ -37,29 +37,18 @@ linearized dynamics
 x_dot = nld.A * x + nld.B * nld.f
 dynamics = x + h * x_dot
 
-# # semi-implicit Euler
-# x_dot = nld.A * x + nld.B * nld.f
-# v_next = x[2:,:] + h * x_dot[2:,:]
-# q_next = x[:2,:] + h * v_next
-# dynamics = Matrix([q_next, v_next])
-
-# # zero order hold
-# Ad, Bd, _ = zero_order_hold(nld.A, nld.B, np.zeros(len(x)), h)
-# dynamics = Ad * x + Bd * nld.f
-
-
 '''
 linearized constraints
 '''
 
 # state bounds
-x_max = np.array([d, np.pi/8., 2., 1.])
+x_max = np.array([d, np.pi/10., 1., 1.])
 x_min = - x_max
 state_upper_bound = x - x_max.reshape(x_max.size, 1)
 state_lower_bound = x_min.reshape(x_min.size, 1) - x
 
 # input bounds
-fc_max = np.array([2.])
+fc_max = np.array([1.])
 fc_min = - fc_max
 input_upper_bound = Matrix([fc - fc_max])
 input_lower_bound = Matrix([fc_min - fc])
@@ -85,18 +74,6 @@ p_dot = { # relative velocity
     'l': - x[2] + l*x[3],
     'r': x[2] - l*x[3]
 }
-# p = { # penetration
-#     'l': - d - dynamics[0] + l*dynamics[1],
-#     'r': dynamics[0] - l*dynamics[1] - d
-# }
-# p_dot = { # relative velocity
-#     'l': - dynamics[2] + l*dynamics[3],
-#     'r': dynamics[2] - l*dynamics[3]
-# }
-# p = { # penetration
-#     'l': - d - (x[0]+h*x[2]) + l*(x[1]+h*x[3]),
-#     'r': (x[0]+h*x[2]) - l*(x[1]+h*x[3]) - d
-# }
 p_min = { # min penetration
     'l': - d - x_max[0] + l*x_min[1],
     'r': x_min[0] - l*x_max[1] - d

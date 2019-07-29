@@ -445,6 +445,7 @@ def branch_and_bound(
     ub = np.inf
     incumbent = None
     leaves = [Node({})] if warm_start is None else warm_start
+    solves = 0
 
     # printing and drawing
     printer = Printer(printing_period)
@@ -463,6 +464,7 @@ def branch_and_bound(
         working_node = candidate_selection(candidate_nodes)
         cutoff = ub - tol
         working_node.solve(solver, cutoff)
+        solves += 1
 
         # pruning
         if working_node.lb >= cutoff:
@@ -487,7 +489,7 @@ def branch_and_bound(
     printer.finalize()
     drawer.finalize(incumbent, leaves)
 
-    return incumbent, leaves
+    return incumbent, leaves, solves
 
 def breadth_first(candidate_nodes):
     '''

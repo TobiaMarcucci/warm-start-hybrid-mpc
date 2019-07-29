@@ -304,14 +304,14 @@ class HybridModelPredictiveController(object):
             return solution.primal.objective, solution.primal.binary_feasible, solution
 
         # solve the mixed integer program using branch and bound
-        incumbent, leaves = branch_and_bound(solver, best_first, self._brancher, **kwargs)
+        incumbent, leaves, qp_solves = branch_and_bound(solver, best_first, self._brancher, **kwargs)
 
         # infeasible problem
         if incumbent is None:
-            return None, leaves
+            return None, leaves, qp_solves
 
         # feasible problem
-        return incumbent.extra.primal, leaves
+        return incumbent.extra.primal, leaves, qp_solves
 
     def _brancher(self, parent):
         '''
@@ -545,6 +545,7 @@ class HybridModelPredictiveController(object):
         self.qp.optimize()
         x = [self.qp.primal_optimizer('x_%d'%t) for t in range(self.T+1)]
         objective = self.qp.primal_objective()
+        n_nodes = self.qp.NodeCount
         self._set_binaries_type('C')
         self.qp.reset()
 
@@ -552,7 +553,7 @@ class HybridModelPredictiveController(object):
         self.qp.Params.OutputFlag = 0
         self.qp.Params.InfUnbdInfo = 1
 
-        return x, objective
+        return x, objective, n_nodes
 
     def _set_binaries_type(self, type):
         for t in range(self.T):

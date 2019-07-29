@@ -130,14 +130,14 @@ class MLDSystem(object):
         nc = sum(d[0].shape[0] for d in domains)
 
         # reshape 1d vectors
+        # change sign to the rhs of the domains to simplify the code below
         for i in range(nm):
             dynamics[i][2] = dynamics[i][2].reshape((dynamics[i][2].size, 1))
-            domains[i][2] = domains[i][2].reshape((domains[i][2].size, 1))
+            domains[i][2] = - domains[i][2].reshape((domains[i][2].size, 1))
 
         # MLD dynamics
         A = np.zeros((nx, nx))
-        # print([d[k] for d in dynamics for k in range(3)])
-        B = np.hstack([np.zeros((nx, 1))] + [d[k] for d in dynamics for k in range(3)])
+        B = np.hstack([np.zeros((nx, 1))] + [d[k] for k in range(3) for d in dynamics])
 
         # MLD constraints
         F0 = np.zeros((nc, nx))
@@ -174,8 +174,8 @@ class MLDSystem(object):
             ))
         hmu = np.ones(1)
 
-        # assumble mld constraints
-        F = np.vstack((F0, Fx, -Fx, Fu, -Fu, Fmu, -Fmu))
+        # assemble mld constraints
+        F = np.vstack((F0, Fx, -Fx, Fu, -Fu, Fmu, -Fmu,))
         G = np.vstack((G0, Gx, -Gx, Gu, -Gu, Gmu, -Gmu))
         h = np.concatenate((h0, hx, -hx, hu, -hu, hmu, -hmu))
 
