@@ -18,7 +18,7 @@ class CartPoleWithWalls(object):
         self.l  = 1. # length pole
         self.d  = .5 # distance walls from origin
         self.eps = .5 # coefficient of restitution
-        self.h = 1./20. # nominal integration step
+        self.h = 1./10. # nominal integration step
         self.g = Matrix([0., -10]) # gravity acceleration
 
         # bounds
