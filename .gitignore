@@ -1,5 +1,4 @@
 *.pyc
-*.npy
 *.dot
 *.pdf
 gurobi.log
