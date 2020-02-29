@@ -13,8 +13,8 @@ class HybridModelPredictiveController(object):
     '''
     Optimal controller for Mixed Logical Dynamical (mld) systems.
     Solves the mixed-integer quadratic optimization problem:
-    min | C_T x_T |^2 + sum_{t=0}^{T-1} | C x_t |^2 + | D u_t |^2
-    s.t. x_0 given
+    min | Q_T x_T |^2 + sum_{t=0}^{T-1} | Q x_t |^2 + | R u_t |^2
+    s.t. x_0 given,
          x_{t+1} = A x_t + B u_t, t = 0, 1, ..., T-1,
          F x_t + G u_t <= h,      t = 0, 1, ..., T-1,
          F_T x_T <= h_T,
@@ -32,7 +32,7 @@ class HybridModelPredictiveController(object):
         T : int
             Horizon of the controller.
         objective : list of np.array
-            Weight matrices in the following order: C, D, C_T.
+            Weight matrices in the following order: Q, R, Q_T.
         terminal_set : list of np.array or None
             Terminal constraint in the form F_T x_T <= h_T.
             The first element of the list must be F_T, the second h_t.
@@ -42,9 +42,10 @@ class HybridModelPredictiveController(object):
         # store inputs
         self.mld = mld
         self.T = T
-        [self.C, self.D, self.C_T] = objective
+        self.Q, self.R, self.Q_T = objective
 
-        # terminal constraint
+        # terminal constraint is enforced via the stage
+        # constraints for time step T-1
         if terminal_set is None:
             terminal_set = [np.empty((0, self.mld.x)), np.empty(0)]
         self.F_Tm1 = np.vstack((mld.F, terminal_set[0].dot(mld.A)))
@@ -58,7 +59,7 @@ class HybridModelPredictiveController(object):
         # warm start construction
         self._update = {
             'mu': self._update_mu(),
-            'rho': np.linalg.pinv(self.C.T).dot(self.C_T.T)
+            'rho': np.linalg.pinv(self.Q.T).dot(self.Q_T.T)
         }
 
     def _check_input_sizes(self):
@@ -67,12 +68,12 @@ class HybridModelPredictiveController(object):
         '''
 
         # weight matrices
-        if self.C.shape[1] != self.mld.nx:
-            raise ValueError('Matrix C has wrong number of columns.')
-        if self.D.shape[1] != self.mld.nu:
-            raise ValueError('Matrix D has wrong number of columns.')
-        if self.C_T.shape[1] != self.mld.nx:
-            raise ValueError('Matrix C_T has wrong number of columns.')
+        if self.Q.shape[1] != self.mld.nx:
+            raise ValueError('Matrix Q has wrong number of columns.')
+        if self.R.shape[1] != self.mld.nu:
+            raise ValueError('Matrix R has wrong number of columns.')
+        if self.Q_T.shape[1] != self.mld.nx:
+            raise ValueError('Matrix Q_T has wrong number of columns.')
 
         # terminal constraint
         if self.F_Tm1.shape[0] != self.h_Tm1.size:
@@ -140,12 +141,12 @@ class HybridModelPredictiveController(object):
                     )
 
             # stage cost
-            Cx = self.C.dot(x)
-            Du = self.D.dot(u)
+            Cx = self.Q.dot(x)
+            Du = self.R.dot(u)
             obj += Cx.dot(Cx) + Du.dot(Du)
 
         # terminal cost
-        CxT = self.C_T.dot(x_next)
+        CxT = self.Q_T.dot(x_next)
         obj += CxT.dot(CxT)
 
         # set cost
@@ -308,10 +309,10 @@ class HybridModelPredictiveController(object):
 
         # infeasible problem
         if incumbent is None:
-            return None, leaves, qp_solves
+            return None, leaves#, qp_solves
 
         # feasible problem
-        return incumbent.extra.primal, leaves, qp_solves
+        return incumbent.extra.primal, leaves#, qp_solves
 
     def _brancher(self, parent):
         '''
@@ -499,12 +500,12 @@ class HybridModelPredictiveController(object):
 
         # stage cost
         pi = []
-        pi.append(- np.linalg.norm(self.C.dot(x0))**2 + \
-                  - np.linalg.norm(self.D.dot(u0))**2)
+        pi.append(- np.linalg.norm(self.Q.dot(x0))**2 + \
+                  - np.linalg.norm(self.R.dot(u0))**2)
 
         # suboptimality cost
-        pi.append(np.linalg.norm(.5*variables['rho'][0] - self.C.dot(x0))**2 + \
-                  np.linalg.norm(.5*variables['sigma'][0] - self.D.dot(u0))**2)
+        pi.append(np.linalg.norm(.5*variables['rho'][0] - self.Q.dot(x0))**2 + \
+                  np.linalg.norm(.5*variables['sigma'][0] - self.R.dot(u0))**2)
 
         # cost of the complementarity slackness
         ub_lb, ub_ub = self._get_bound_binaries(identifier)
@@ -553,7 +554,7 @@ class HybridModelPredictiveController(object):
         self.qp.Params.OutputFlag = 0
         self.qp.Params.InfUnbdInfo = 1
 
-        return x, objective, n_nodes
+        return x, objective
 
     def _set_binaries_type(self, type):
         for t in range(self.T):

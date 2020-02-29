@@ -155,21 +155,21 @@ class DualSolution(object):
         if ctrl.qp.status == 2:
 
             # stage multipliers
-            variables['rho'] = [2*ctrl.C.dot(popt('x_%d'%t)) for t in range(ctrl.T)]
-            variables['sigma'] = [2*ctrl.D.dot(np.concatenate((popt('uc_%d'%t),popt('ub_%d'%t)))) for t in range(ctrl.T)]
+            variables['rho'] = [2*ctrl.Q.dot(popt('x_%d'%t)) for t in range(ctrl.T)]
+            variables['sigma'] = [2*ctrl.R.dot(np.concatenate((popt('uc_%d'%t),popt('ub_%d'%t)))) for t in range(ctrl.T)]
 
             # terminal multipliers
-            variables['rho'].append(2*ctrl.C_T.dot(popt('x_%d'%ctrl.T)))
+            variables['rho'].append(2*ctrl.Q_T.dot(popt('x_%d'%ctrl.T)))
 
         # auxiliary multipliers, if primal infeasible
         else:
 
             # get Farkas proof state output
-            variables['rho'] = [np.zeros(ctrl.C.shape[0]) for t in range(ctrl.T)]
-            variables['rho'].append(np.zeros(ctrl.C_T.shape[0]))
+            variables['rho'] = [np.zeros(ctrl.Q.shape[0]) for t in range(ctrl.T)]
+            variables['rho'].append(np.zeros(ctrl.Q_T.shape[0]))
 
             # get Farkas proof input output
-            variables['sigma'] = [np.zeros(ctrl.D.shape[0]) for t in range(ctrl.T)]
+            variables['sigma'] = [np.zeros(ctrl.R.shape[0]) for t in range(ctrl.T)]
 
         return DualSolution(variables, ctrl.qp.dual_objective())
 
