@@ -1,8 +1,10 @@
 # external imports
 import numpy as np
 import gurobipy as grb
+from time import time
 from copy import copy, deepcopy
 from operator import le, ge, eq
+import gc
 
 # internal inputs
 from warm_start_hmpc.bounded_qp import BoundedQP
@@ -58,13 +60,14 @@ class HybridModelPredictiveController(object):
 
         # warm start construction
         self._update = {
-            'mu': self._update_mu(),
-            'rho': np.linalg.pinv(self.Q.T).dot(self.Q_T.T)
+            'mu': self._update_mu(), # terminal constraint
+            'rho': np.linalg.pinv(self.Q.T).dot(self.Q_T.T) # teminal cost
         }
 
     def _check_input_sizes(self):
         '''
-        Checks that the matrices passed as inputs in the initialization of the class have the right properties.
+        Checks that the matrices passed as inputs in the initialization of the
+        class have the right properties.
         '''
 
         # weight matrices
@@ -87,15 +90,16 @@ class HybridModelPredictiveController(object):
 
         Returns
         -------
-        qp : BoundedQP
-            Gurobi qp of the mathematical program.
+        BoundedQP
+        Convex relaxation of the MIQP in the form of a Gurobi QP.
         '''
 
         # initialize program
         qp = BoundedQP()
         obj = 0.
 
-        # initial state (initialized to zero)
+        # initial state
+        # initially set to zero, this value will be changed when calling the controller
         x_next = qp.add_variables(self.mld.nx, name='x_0')
         qp.add_constraints(x_next, eq, [0.]*self.mld.nx, name='lam_0')
 
@@ -104,50 +108,43 @@ class HybridModelPredictiveController(object):
 
             # stage variables
             x = x_next
-            x_next = qp.add_variables(self.mld.nx, name='x_%d'%(t+1))
-            uc = qp.add_variables(self.mld.nuc, name='uc_%d'%t)
-            ub = qp.add_variables(self.mld.nub, name='ub_%d'%t)
+            x_next = qp.add_variables(self.mld.nx, name=f'x_{t+1}')
+            uc = qp.add_variables(self.mld.nuc, name=f'uc_{t}')
+            ub = qp.add_variables(self.mld.nub, name=f'ub_{t}')
             u = np.concatenate((uc, ub))
             
-            # bounds on the binaries: inequalities must be stated as expr <= num, to get negative duals
-            # (note that num <= expr would be modified to expr => num and would give positive duals)
-            qp.add_constraints(-ub, le, [0.]*self.mld.nub, name='nu_lb_%d'%t)
-            qp.add_constraints(ub, le, [1.]*self.mld.nub, name='nu_ub_%d'%t)
+            # bounds on the binaries
+            # inequalities are stated as [expr <= num] to get negative duals
+            # (note that [num <= expr] would be modified by Gurobi
+            # to [expr => num] and would give positive duals)
+            qp.add_constraints(-ub, le, [0.]*self.mld.nub, name=f'nu_lb_{t}')
+            qp.add_constraints(ub, le, [1.]*self.mld.nub, name=f'nu_ub_{t}')
 
             # mld dynamics
             qp.add_constraints(
-                x_next,
-                eq,
-                self.mld.A.dot(x) + self.mld.B.dot(u),
-                name='lam_%d'%(t+1)
-                )
+                x_next, eq, self.mld.A.dot(x) + self.mld.B.dot(u),
+                name=f'lam_{t+1}')
 
             # mld stage constraints
             if t < self.T-1:
                 qp.add_constraints(
-                    self.mld.F.dot(x) + self.mld.G.dot(u),
-                    le,
-                    self.mld.h,
-                    name='mu_%d'%t
-                    )
+                    self.mld.F.dot(x) + self.mld.G.dot(u), le, self.mld.h,
+                    name=f'mu_{t}')
             
-            # mld constraint + terminal constraint
+            # mld constraint plus terminal constraint
             else:
                 qp.add_constraints(
-                    self.F_Tm1.dot(x) + self.G_Tm1.dot(u),
-                    le,
-                    self.h_Tm1,
-                    name='mu_%d'%t
-                    )
+                    self.F_Tm1.dot(x) + self.G_Tm1.dot(u), le, self.h_Tm1,
+                    name=f'mu_{t}')
 
             # stage cost
-            Cx = self.Q.dot(x)
-            Du = self.R.dot(u)
-            obj += Cx.dot(Cx) + Du.dot(Du)
+            Qx = self.Q.dot(x)
+            Ru = self.R.dot(u)
+            obj += Qx.dot(Qx) + Ru.dot(Ru)
 
         # terminal cost
-        CxT = self.Q_T.dot(x_next)
-        obj += CxT.dot(CxT)
+        QxT = self.Q_T.dot(x_next)
+        obj += QxT.dot(QxT)
 
         # set cost
         qp.setObjective(obj)
@@ -156,9 +153,9 @@ class HybridModelPredictiveController(object):
 
     def _update_mu(self):
         '''
-        Computes the matrix neeed to compute the shifted value of the multiplier mu_{T-2|1}.
-        In the warm start process, this multiplier is set to mu_{T-2|1} := M mu_{T-1|0}.
-        This function computes the matrix M.
+        Computes the matrix neeed to compute the shifted value of the
+        multiplier mu_{T-2|1}. In the warm start process, this multiplier is
+        set to mu_{T-2|1} := M mu_{T-1|0}. This function computes the matrix M.
 
         Returns
         -------
@@ -197,9 +194,10 @@ class HybridModelPredictiveController(object):
 
         return np.vstack(M).T
 
-    def _solve_subproblem(self, identifier, x0, cutoff=None):
+    def _solve_subproblem(self, identifier, x0, cutoff=None, gurobi_options={}, active_set=None):
         '''
-        Solves the QP relaxation indentified by the identifier for the given initial state.
+        Solves the QP relaxation indentified by the identifier for the given
+        initial state.
 
         Parameters
         ----------
@@ -208,8 +206,12 @@ class HybridModelPredictiveController(object):
         x0 : np.array
             Initial state of the system.
         cutoff : float
-            Objective threshold above which the solution of the problem can be terminated.
-            (Not used at the moment.)
+            Objective threshold above which the solution of the problem can be
+            terminated. (Currently not used.)
+        gurobi_options : dict
+            Options for the Gurobi QP solver.
+        active_set : list of int
+            Active
 
         Returns
         -------
@@ -222,9 +224,9 @@ class HybridModelPredictiveController(object):
         self._set_bound_binaries(identifier)
 
         # run the optimization and initialize the result
-        self.qp.optimize() # TODO: use cutoff here
+        self.qp.optimize(gurobi_options, active_set) # TODO: use cutoff, and warm start qp solve
 
-        return SubproblemSolution.from_controller(self)
+        return SubproblemSolution.from_controller(self), self.qp.Runtime
 
     def _set_bound_binaries(self, identifier):
         '''
@@ -250,8 +252,8 @@ class HybridModelPredictiveController(object):
             ub_t = [ identifier[(t, i)] if (t, i) in identifier else 1. for i in range(self.mld.nub)]
 
             # set bounds
-            self.qp.set_constraint_rhs('nu_lb_%d'%t, lb_t)
-            self.qp.set_constraint_rhs('nu_ub_%d'%t, ub_t)
+            self.qp.set_constraint_rhs(f'nu_lb_{t}', lb_t)
+            self.qp.set_constraint_rhs(f'nu_ub_{t}', ub_t)
 
     def _get_bound_binaries(self, identifier):
         '''
@@ -271,17 +273,28 @@ class HybridModelPredictiveController(object):
         '''
 
         # initialize bounds on the binary inputs
-        ub_lb = [np.zeros(self.mld.nub) for t in range(self.T)]
-        ub_ub = [np.ones(self.mld.nub) for t in range(self.T)]
+        ub_lb = np.zeros((self.T, self.mld.nub))
+        ub_ub = np.ones((self.T, self.mld.nub))
 
         # parse identifier
         for k, v in identifier.items():
-            ub_lb[k[0]][k[1]] = v
-            ub_ub[k[0]][k[1]] = v
+            ub_lb[k] = v
+            ub_ub[k] = v
 
         return ub_lb, ub_ub
 
-    def feedforward(self, x0, **kwargs):
+        # # initialize bounds on the binary inputs
+        # ub_lb = [np.zeros(self.mld.nub)] * self.T
+        # ub_ub = [np.ones(self.mld.nub)] * self.T
+
+        # # parse identifier
+        # for k, v in identifier.items():
+        #     ub_lb[k[0]][k[1]] = v
+        #     ub_ub[k[0]][k[1]] = v
+
+        # return ub_lb, ub_ub
+
+    def feedforward(self, x0, gurobi_options={}, **kwargs):
         '''
         Solves the mixed integer program using the branch_and_bound function.
 
@@ -300,19 +313,20 @@ class HybridModelPredictiveController(object):
         '''
 
         # generate a solver for the branch and bound algorithm
-        def solver(identifier, cutoff):
-            solution = self._solve_subproblem(identifier, x0, cutoff)
-            return solution.primal.objective, solution.primal.binary_feasible, solution
+        def solver(identifier, cutoff, extra):
+            active_set = None if extra is None else extra.active_set
+            solution, solve_time = self._solve_subproblem(identifier, x0, cutoff, gurobi_options, active_set)
+            return solution.primal.objective, solution.primal.binary_feasible, solve_time, solution
 
         # solve the mixed integer program using branch and bound
-        incumbent, leaves, qp_solves = branch_and_bound(solver, best_first, self._brancher, **kwargs)
+        incumbent, leaves, qp_solves, solver_time = branch_and_bound(solver, best_first, self._brancher, **kwargs)
 
         # infeasible problem
         if incumbent is None:
-            return None, leaves#, qp_solves
+            return None, leaves, qp_solves, solver_time
 
         # feasible problem
-        return incumbent.extra.primal, leaves#, qp_solves
+        return incumbent.extra.primal, leaves, qp_solves, solver_time
 
     def _brancher(self, parent):
         '''
@@ -344,7 +358,7 @@ class HybridModelPredictiveController(object):
 
             # instantiate child solution with no primal and parent dual
             identifier = {**parent.identifier, **branch}
-            solution = SubproblemSolution(None, parent.extra.dual)
+            solution = SubproblemSolution(None, parent.extra.dual, parent.extra.active_set)
             children.append(Node(identifier, lb, solution))
 
         return children
@@ -372,7 +386,10 @@ class HybridModelPredictiveController(object):
             Nodes to initialize the branch and bound algorithm.
         '''
 
-        # create wrm start checking one leaf per time
+        gc.disable()
+        tic = time()
+
+        # create warm start checking one leaf per time
         warm_start = []
         u0 = np.concatenate((uc0, ub0))
         for leaf in leaves:
@@ -390,15 +407,42 @@ class HybridModelPredictiveController(object):
                 pi = self._get_pi(identifier, variables, shifted_variables, x0, u0, e0)
                 shifted_objective = max(0., objective + sum(pi))
 
-                # if was infeasible and still infeasible
-                if np.isinf(leaf.lb) and shifted_objective > 0.:
-                    shifted_lb = np.inf
-                    shifted_dual = DualSolution(shifted_variables, shifted_objective)
+                # # active set
+                # active_set = {}
+                # active_set['v'] = [0] * self.qp.NumVars
+                # active_set['c'] = [0] * self.qp.NumConstrs
+                # indices = {c.ConstrName: i for i, c in enumerate(self.qp.getConstrs())}
 
-                # if was infeasible and now could be feasible
-                elif np.isinf(leaf.lb) and shifted_objective <= 0.:
-                    shifted_lb = 0.
-                    shifted_dual = None
+                # # equality constraints are always active
+                # for t, lam_t in enumerate(variables['lam']):
+                #     for i in range(len(lam_t)):
+                #         active_set['c'][indices[f'lam_{t}[{i}]']] = -1
+
+                # # mld inequalities
+                # for t, mu_t in enumerate(variables['mu'][:-2]):
+                #     for i in range(len(mu_t)):
+                #         active_set['c'][indices[f'mu_{t}[{i}]']] = leaf.extra.active_set['c'][indices[f'mu_{t+1}[{i}]']]
+                # mu = shifted_variables['mu'][-2]
+                # for i, mu_i in enumerate(mu_t):
+                #     if not np.isclose(mu_i, 0):
+                #         active_set['c'][indices[f'mu_{self.T-2}[{i}]']] = -1
+
+                # # binary bounds
+                # for nu in ['nu_lb', 'nu_ub']:
+                #     for t, nu_t in enumerate(variables[nu][:-1]):
+                #         for i in range(len(nu_t)):
+                #             active_set['c'][indices[nu+f'_{t}[{i}]']] = leaf.extra.active_set['c'][indices[nu+f'_{t+1}[{i}]']]
+
+                # if was infeasible and still infeasible
+                if np.isinf(leaf.lb):
+                    if shifted_objective > 0.:
+                        shifted_lb = np.inf
+                        shifted_dual = DualSolution(shifted_variables, shifted_objective)
+
+                    # if was infeasible and now could be feasible
+                    else:
+                        shifted_lb = 0.
+                        shifted_dual = None
 
                 # if it was feasible
                 else:
@@ -410,7 +454,10 @@ class HybridModelPredictiveController(object):
                 shifted_solution = SubproblemSolution(None, shifted_dual)
                 warm_start.append(Node(shifted_identifier, shifted_lb, shifted_solution))
 
-        return warm_start
+        construction_time = time() - tic
+        gc.enable()
+
+        return warm_start, construction_time
 
     @staticmethod
     def _retain_leaf(identifier, ub0):
@@ -430,16 +477,18 @@ class HybridModelPredictiveController(object):
             True if the leaf can be reatained, Flase if it must be dropped.
         '''
 
-        # retain until proven otherwise
-        retain = True
-        for k, v in identifier.items():
+        return all(v == ub0[k[1]] for k, v in identifier.items() if k[0]==0)
 
-            # check if the identifier agrees with the input variable at time zero
-            if k[0] == 0 and not np.isclose(v, ub0[k[1]]):
-                retain = False
-                break
+        # # retain until proven otherwise
+        # retain = True
+        # for k, v in identifier.items():
 
-        return retain
+        #     # check if the identifier agrees with the input variable at time zero
+        #     if k[0] == 0 and not np.isclose(v, ub0[k[1]]):
+        #         retain = False
+        #         break
+
+        # return retain
 
     def _shift_dual_variables(self, variables):
         '''
@@ -461,14 +510,16 @@ class HybridModelPredictiveController(object):
 
         # shift backwards by one and append zero
         for k in ['lam', 'nu_lb', 'nu_ub', 'sigma']:
-            shifted_variables[k] = [v for v in variables[k][1:]]
-            shifted_variables[k].append(0. * variables[k][-1])
+            # shifted_variables[k] = [v for v in variables[k][1:]]
+            shifted_variables[k] = variables[k][1:]
+            shifted_variables[k].append(np.zeros(variables[k][-1].shape))
 
         # shift backwards by one, append optimal update and zero
         for k in ['mu', 'rho']:
-            shifted_variables[k] = [v for v in variables[k][1:-1]]
+            # shifted_variables[k] = [v for v in variables[k][1:-1]]
+            shifted_variables[k] = variables[k][1:-1]
             shifted_variables[k].append(self._update[k].dot(variables[k][-1]))
-            shifted_variables[k].append(0. * variables[k][-1])
+            shifted_variables[k].append(np.zeros(variables[k][-1].shape))
 
         return shifted_variables
 
@@ -499,35 +550,48 @@ class HybridModelPredictiveController(object):
         '''
 
         # stage cost
-        pi = []
-        pi.append(- np.linalg.norm(self.Q.dot(x0))**2 + \
-                  - np.linalg.norm(self.R.dot(u0))**2)
+        squared = lambda x : x.dot(x)
+        pi = np.zeros(6)
+        Qx0 = self.Q.dot(x0)
+        Ru0 = self.R.dot(u0)
+        pi[0] = - squared(Qx0) - squared(Ru0)
 
         # suboptimality cost
-        pi.append(np.linalg.norm(.5*variables['rho'][0] - self.Q.dot(x0))**2 + \
-                  np.linalg.norm(.5*variables['sigma'][0] - self.R.dot(u0))**2)
+        pi[1] = squared(.5*variables['rho'][0] - Qx0) + squared(.5*variables['sigma'][0] - Ru0)
 
-        # cost of the complementarity slackness
+        # complementarity slackness
         ub_lb, ub_ub = self._get_bound_binaries(identifier)
         residuals = {
             'mu': self.mld.F.dot(x0) + self.mld.G.dot(u0) - self.mld.h,
             'nu_lb': ub_lb[0] - self.mld.V.dot(u0),
             'nu_ub': self.mld.V.dot(u0) - ub_ub[0]
         }
-        pi.append(- sum(residual.dot(variables[k][0]) for k, residual in residuals.items()))
+        pi[2] = - sum(residual.dot(variables[k][0]) for k, residual in residuals.items())
 
-        # cost of the modeling error
-        pi.append(- variables['lam'][1].dot(e0))
+        # model error
+        pi[3] = - variables['lam'][1].dot(e0)
 
-        # cost of the terminal cost
-        pi.append(.25 * np.linalg.norm(variables['rho'][self.T])**2 - \
-                  .25 * np.linalg.norm(shifted_variables['rho'][self.T-1])**2)
+        # terminal cost
+        pi[4] = .25 * squared(variables['rho'][self.T]) - \
+                .25 * squared(shifted_variables['rho'][self.T-1])
 
-        # cost of the terminal constraint
-        pi.append(self.h_Tm1.dot(variables['mu'][self.T-1]) - \
-                  self.mld.h.dot(shifted_variables['mu'][self.T-2]))
+        # terminal constraint
+        pi[5] = self.h_Tm1.dot(variables['mu'][self.T-1]) - \
+                self.mld.h.dot(shifted_variables['mu'][self.T-2])
 
         return pi
+
+    def _evaluate_dual_objective(self, identifier, variables, x0):
+        squared = lambda x : x.dot(x)
+        obj =- .25 * sum(squared(r) for r in variables['rho'])
+        obj -= .25 * sum(squared(s) for s in variables['sigma'])
+        obj -= sum(self.mld.h.dot(m) for m in variables['mu'][:-1])
+        obj -= self.h_Tm1.dot(variables['mu'][-1])
+        ub_lb, ub_ub = self._get_bound_binaries(identifier)
+        obj -= sum(ub_ub[t].dot(n) for t, n in enumerate(variables['nu_ub']))
+        obj += sum(ub_lb[t].dot(n) for t, n in enumerate(variables['nu_lb']))
+        obj -= x0.dot(variables['lam'][0])
+        return max(0, obj)
 
     def feedforward_gurobi(self, x0, gurobi_options={}):
 
@@ -537,28 +601,20 @@ class HybridModelPredictiveController(object):
         self._set_binaries_type('B')
         self.qp.set_constraint_rhs('lam_0', x0)
 
-        # set parameters
-        self.qp.Params.OutputFlag = 1
-        for parameter, value in gurobi_options.items():
-            self.qp.setParam(parameter, value)
-
         # run the optimization
-        self.qp.optimize()
-        x = [self.qp.primal_optimizer('x_%d'%t) for t in range(self.T+1)]
+        self.qp.optimize(gurobi_options)
+        x = [self.qp.primal_optimizer(f'x_{t}') for t in range(self.T+1)]
         objective = self.qp.primal_objective()
-        n_nodes = self.qp.NodeCount
+        n_nodes = int(self.qp.NodeCount)
+        solver_time = self.qp.Runtime
         self._set_binaries_type('C')
         self.qp.reset()
 
-        # 
-        self.qp.Params.OutputFlag = 0
-        self.qp.Params.InfUnbdInfo = 1
-
-        return x, objective
+        return x, objective, n_nodes, solver_time
 
     def _set_binaries_type(self, type):
         for t in range(self.T):
-            for ub in self.qp.get_variables('ub_%d'%t):
+            for ub in self.qp.get_variables(f'ub_{t}'):
                 ub.VType = type
         self.qp.update()
 

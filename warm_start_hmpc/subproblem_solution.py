@@ -3,7 +3,7 @@ import numpy as np
 
 class SubproblemSolution(object):
 
-    def __init__(self, primal, dual):
+    def __init__(self, primal, dual, active_set=None):
         '''
         Parameters
         ----------
@@ -13,6 +13,7 @@ class SubproblemSolution(object):
 
         self.primal = primal
         self.dual = dual
+        self.active_set = active_set
 
     @staticmethod
     def from_controller(controller):
@@ -33,7 +34,15 @@ class SubproblemSolution(object):
         primal = PrimalSolution.from_controller(controller)
         dual = DualSolution.from_controller(controller)
 
-        return SubproblemSolution(primal, dual)
+        # active set
+        if controller.qp.Params.Method == 1:
+            active_set = {}
+            active_set['c'] = [c.getAttr('CBasis') for c in controller.qp.getConstrs()]
+            active_set['v'] = [v.getAttr('VBasis') for v in controller.qp.getVars()]
+        else:
+            active_set = None
+
+        return SubproblemSolution(primal, dual, active_set)
 
 class PrimalSolution(object):
     '''
@@ -77,32 +86,17 @@ class PrimalSolution(object):
         # get minimizer primal solution
         variables = {}
         opt = controller.qp.primal_optimizer
-        variables['x'] = [opt('x_%d'%t) for t in range(controller.T+1)]
+        variables['x'] = [opt(f'x_{t}') for t in range(controller.T+1)]
         for k in ['uc', 'ub']:
-            variables[k] = [opt('%s_%d'%(k,t)) for t in range(controller.T)]
+            variables[k] = [opt(f'{k}_{t}') for t in range(controller.T)]
 
         # check if binary feasible
         rhs = controller.qp.get_constraint_rhs
-        lb = np.concatenate([rhs('nu_lb_%d'%t) for t in range(controller.T)])
-        ub = np.concatenate([rhs('nu_ub_%d'%t) for t in range(controller.T)])
+        lb = np.concatenate([rhs(f'nu_lb_{t}') for t in range(controller.T)])
+        ub = np.concatenate([rhs(f'nu_ub_{t}') for t in range(controller.T)])
         binary_feasible = np.array_equal(lb, -ub)
 
         return PrimalSolution(variables, controller.qp.primal_objective(), binary_feasible)
-
-    # @staticmethod
-    # def infeasible(T):
-
-    #     # store primal variables
-    #     variables = {}
-    #     variables['x'] = [None for t in range(T)]
-    #     variables['uc'] = [None for t in range(T-1)]
-    #     variables['ud'] = [None for t in range(T-1)]
-
-    #     # store primal objective
-    #     objective = np.inf
-
-    #     return PrimalSolution(variables, objective)
-
 
 class DualSolution(object):
     '''
@@ -147,19 +141,19 @@ class DualSolution(object):
 
         # get minimizer dual solution
         variables = {}
-        variables['lam'] = [dopt('lam_%d'%t) for t in range(ctrl.T+1)]
+        variables['lam'] = [dopt(f'lam_{t}') for t in range(ctrl.T+1)]
         for k in ['mu', 'nu_lb', 'nu_ub']:
-            variables[k] = [dopt('%s_%d'%(k,t)) for t in range(ctrl.T)]
+            variables[k] = [dopt(f'{k}_{t}') for t in range(ctrl.T)]
 
         # auxiliary multipliers, if primal feasible
         if ctrl.qp.status == 2:
 
             # stage multipliers
-            variables['rho'] = [2*ctrl.Q.dot(popt('x_%d'%t)) for t in range(ctrl.T)]
-            variables['sigma'] = [2*ctrl.R.dot(np.concatenate((popt('uc_%d'%t),popt('ub_%d'%t)))) for t in range(ctrl.T)]
+            variables['rho'] = [2*ctrl.Q.dot(popt(f'x_{t}')) for t in range(ctrl.T)]
+            variables['sigma'] = [2*ctrl.R.dot(np.concatenate((popt(f'uc_{t}'),popt(f'ub_{t}')))) for t in range(ctrl.T)]
 
             # terminal multipliers
-            variables['rho'].append(2*ctrl.Q_T.dot(popt('x_%d'%ctrl.T)))
+            variables['rho'].append(2*ctrl.Q_T.dot(popt(f'x_{ctrl.T}')))
 
         # auxiliary multipliers, if primal infeasible
         else:
@@ -172,7 +166,3 @@ class DualSolution(object):
             variables['sigma'] = [np.zeros(ctrl.R.shape[0]) for t in range(ctrl.T)]
 
         return DualSolution(variables, ctrl.qp.dual_objective())
-
-    # @staticmethod
-    # def unbounded():
-    #     pass
