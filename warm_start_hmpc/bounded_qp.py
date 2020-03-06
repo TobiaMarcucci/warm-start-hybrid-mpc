@@ -28,7 +28,7 @@ class BoundedQP(grb.Model):
 
         Returns
         -------
-        x : np.array
+        np.array
             Numpy array that collects the new optimization variables.
         '''
 
@@ -61,7 +61,7 @@ class BoundedQP(grb.Model):
 
         Returns
         -------
-        x : np.array
+        np.array
             Numpy array that collects the asked variables.
             Returns an empty array if the variables is not defined.
         '''
@@ -99,7 +99,7 @@ class BoundedQP(grb.Model):
 
         Returns
         -------
-        c : np.array of gurobi.Constr
+        np.array of gurobi.Constr
             Numpy array that collects the new constraints.
         '''
 
@@ -135,7 +135,7 @@ class BoundedQP(grb.Model):
 
         Returns
         -------
-        c : np.array
+        np.array
             Numpy array that collects the asked constraints.
         '''
 
@@ -165,7 +165,7 @@ class BoundedQP(grb.Model):
         name : string
             Name of the family of constraints of wich we want to reset the rhs.
         rhs : np.array
-            New value of the right-hand side.
+            New value of the constraint right-hand side.
         '''
 
         # check input size
@@ -188,6 +188,11 @@ class BoundedQP(grb.Model):
         ----------
         name : string
             Name of the family of constraints of wich we want to get the rhs.
+
+        Returns
+        -------
+        np.array
+            Current value of the constraint right-hand side.
         '''
 
         return np.array([ci.RHS for ci in self.get_constraints(name)])
@@ -237,7 +242,7 @@ class BoundedQP(grb.Model):
 
         Returns
         -------
-        np.array
+        np.array or None
             Array that collects the optimal values of the primal variables.
             Returns the primal optimizer if the problem is solved to optimality.
             Returns None if infeasible.
@@ -292,7 +297,7 @@ class BoundedQP(grb.Model):
 
         Returns
         -------
-        float or None
+        float or np.inf
             Primal objective.
         '''
 
