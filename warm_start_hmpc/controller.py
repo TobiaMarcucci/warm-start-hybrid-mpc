@@ -3,6 +3,7 @@ import gc
 import numpy as np
 from time import time
 from operator import le, ge, eq
+from scipy.sparse import coo_matrix
 
 # internal inputs
 from warm_start_hmpc.bounded_qp import BoundedQP
@@ -313,6 +314,33 @@ class HybridModelPredictiveController(object):
             Upper bound imposed by the identifier on the binary inputs in the problem.
         '''
 
+        # tic = time()
+        # zeros = tuple(map(list, zip(*[k for k, v in identifier.items() if v==0])))
+        # ones = tuple(map(list, zip(*[k for k, v in identifier.items() if v==1])))
+        # t1 = time()-tic
+        # ub_lb = np.zeros((self.T, self.mld.nub))
+        # ub_ub = np.ones((self.T, self.mld.nub))
+        # t2 = time()-tic
+        # ub_lb[ones] = 1
+        # ub_ub[zeros] = 0
+        # t3 = time()-tic
+        # print(t1, t2, t3)
+        # print('\n')
+
+
+        # tic = time()
+        # indices = tuple(map(list, zip(*identifier.keys())))
+        # values = tuple(identifier.values())
+        # t1 = time()-tic
+        # ub_lb = np.zeros((self.T, self.mld.nub))
+        # ub_ub = np.ones((self.T, self.mld.nub))
+        # t2 = time()-tic
+        # ub_lb[indices] = values
+        # ub_ub[indices] = values
+        # t3 = time()-tic
+        # print(t1/t3, t2/t3, 1)
+        # print('\n')
+
         # initialize bounds on the binary inputs
         ub_lb = np.zeros((self.T, self.mld.nub))
         ub_ub = np.ones((self.T, self.mld.nub))
@@ -321,6 +349,9 @@ class HybridModelPredictiveController(object):
         for k, v in identifier.items():
             ub_lb[k] = v
             ub_ub[k] = v
+
+        # print(np.linalg.norm(ub_lb - ub_lb_sp))
+        # print(np.linalg.norm(ub_ub - ub_ub_sp))
 
         return ub_lb, ub_ub
 
