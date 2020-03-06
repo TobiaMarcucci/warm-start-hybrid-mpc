@@ -8,7 +8,7 @@ from scipy.linalg import solve_discrete_are
 from warm_start_hmpc.bounded_qp import BoundedQP
 
 def solve_dare(A, B, Q, R):
-    """
+    '''
     Returns the solution of the Discrete Algebraic Riccati Equation (DARE).
     Consider the linear quadratic control problem V*(x(0)) = min_{x(.), u(.)} 1/2 sum_{t=0}^inf x'(t) Q x(t) + u'(t) R u(t) subject to x(t+1) = A x(t) + B u(t).
     The optimal solution is u(0) = K x(0) which leads to V*(x(0)) = 1/2 x'(0) P x(0).
@@ -31,7 +31,7 @@ def solve_dare(A, B, Q, R):
         Hessian of the cost-to-go (positive definite).
     K : numpy.ndarray
         Optimal feedback gain matrix.
-    """
+    '''
 
     # cost to go
     P = solve_discrete_are(A, B, Q, R)
@@ -42,7 +42,7 @@ def solve_dare(A, B, Q, R):
     return P, K
 
 def mcais(A, D, e, verbose=False):
-    """
+    '''
     Returns the maximal constraint-admissible (positive) invariant set O_inf for the system x(t+1) = A x(t) subject to the constraint x in X := {x | D x <= e}.
     O_inf is also known as maximum output admissible set.
     It holds that x(0) in O_inf <=> x(t) in X for all t >= 0.
@@ -50,7 +50,7 @@ def mcais(A, D, e, verbose=False):
     Sufficient conditions for this set to be finitely determined (i.e. defined by a finite number of facets) are: A stable, X bounded and containing the origin.
 
     Math
-    ----------
+    ----
     At each time step t, we want to verify if at the next time step t+1 the system will go outside X.
     Let's consider X := {x | D_i x <= e_i, i = 1,...,n} and t = 0.
     In order to ensure that x(1) = A x(0) is inside X, we need to consider one by one all the constraints and for each of them, the worst-case x(0).
@@ -66,7 +66,7 @@ def mcais(A, D, e, verbose=False):
     Once at convergence O_Inf = X U A X U ... U A^t X.
 
     Arguments
-    ----------
+    ---------
     A : numpy.ndarray
         State transition matrix.
     D : numpy.ndarray
@@ -76,15 +76,15 @@ def mcais(A, D, e, verbose=False):
     verbose : bool
         If True prints at each iteration the convergence parameters.
 
-    Returns:
-    ----------
+    Returns
+    -------
     D_inf : numpy.ndarray
         Left hand side of the maximal constraint-admissible (positive) ivariant.
     e_inf : numpy.ndarray
         Right hand side of the maximal constraint-admissible (positive) ivariant.
     t : int
         Determinedness index.
-    """
+    '''
 
     # ensure convergence of the algorithm
     eig_max = np.max(np.absolute(np.linalg.eig(A)[0]))
@@ -117,9 +117,9 @@ def mcais(A, D, e, verbose=False):
 
         # print status of the algorithm
         if verbose:
-            print('Time horizon: %d.'%t, end=' ')
-            print('Convergence index: %f.'%max(residuals), end=' ')
-            print('Number of facets: %d.'%D_inf.shape[0], end='\r')
+            print(f'Time horizon: {t}.', end=' ')
+            print(f'Convergence index: {max(residuals)}.', end=' ')
+            print(f'Number of facets: {D_inf.shape[0]}.', end='\r')
 
         # convergence check
         new_facets = [i for i, r in enumerate(residuals) if r > 0.]
@@ -139,12 +139,12 @@ def mcais(A, D, e, verbose=False):
 
     D_inf, e_inf = remove_redundant_inequalities(D_inf, e_inf)
     if verbose:
-        print('minimal facets are %d.'%D_inf.shape[0])
+        print(f'minimal facets are {D_inf.shape[0]}.')
 
     return D_inf, e_inf
 
 def remove_redundant_inequalities(E, f, tol=1.e-7):
-    """
+    '''
     Computes the indices of the facets that generate a minimal representation of the polyhedron solving an LP for each facet of the redundant representation.
     (See "Fukuda - Frequently asked questions in polyhedral computation" Sec.2.21.)
     In case of equalities, first the problem is projected in the nullspace of the equalities.
@@ -156,7 +156,7 @@ def remove_redundant_inequalities(E, f, tol=1.e-7):
     ----------
     minimal_facets : list of int
         List of indices of the non-redundant inequalities A x <= b (None if the polyhedron in empty).
-    """
+    '''
 
     # initialize list of non-redundant facets
     [nc, nx] = E.shape

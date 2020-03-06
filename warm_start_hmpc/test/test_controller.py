@@ -41,7 +41,7 @@ class TestController(unittest.TestCase):
         np.random.seed(1)
 
         # update rho
-        np.testing.assert_array_equal(cp.controller._update['rho'], cp.C_T_scaling * np.eye(cp.mld.nx))
+        np.testing.assert_array_equal(cp.controller._update['rho'], cp.Q_T_scaling * np.eye(cp.mld.nx))
 
         # update mu without terminal constraint
         F_T = np.empty((0,cp.mld.nx))
@@ -123,7 +123,7 @@ class TestController(unittest.TestCase):
 
         # check that the cost stored in the each warm start node is a lower bound to its optimal values
         for node in cp.warm_start:
-            node_solution = cp.controller._solve_subproblem(node.identifier, cp.x1)
+            node_solution = cp.controller._solve_subproblem(node.identifier, cp.x1)[0]
             self.assertTrue(node_solution.primal.objective >= node.lb)
 
     def test_warm_start_cover(self):
@@ -165,8 +165,8 @@ class TestController(unittest.TestCase):
     def test_warm_start_vs_cold_start(self):
 
         # solve with and without warm start and compare optimal value
-        solution_ws, _ = cp.controller.feedforward(cp.x1, printing_period=None, warm_start=cp.warm_start)
-        solution, _ = cp.controller.feedforward(cp.x1, printing_period=None)
+        solution_ws = cp.controller.feedforward(cp.x1, printing_period=None, warm_start=cp.warm_start)[0]
+        solution = cp.controller.feedforward(cp.x1, printing_period=None)[0]
         self.assertEqual(solution_ws.objective, solution.objective)
 
 if __name__ == '__main__':

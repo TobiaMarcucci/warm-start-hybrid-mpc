@@ -1,7 +1,6 @@
 # external imports
 import unittest
 import numpy as np
-import gurobipy as grb
 from operator import le, ge, eq
 
 # internal inputs
@@ -27,7 +26,7 @@ class TestBoundedQP(unittest.TestCase):
             self.assertEqual(xi.VarName, 'x[%d]'%i)
 
             # check that the lower bound is -inf
-            self.assertEqual(xi.LB, -grb.GRB.INFINITY)
+            self.assertEqual(xi.LB, -np.inf)
 
         # get variables back
         for i, xi in enumerate(qp.get_variables('x')):

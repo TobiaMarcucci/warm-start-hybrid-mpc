@@ -104,11 +104,11 @@ mld = MLDSystem.from_symbolic(dynamics, constraints, x, inputs, b.shape[0])
 T = 40
 
 # weight matrices
-C = np.eye(mld.nx)
-D = np.vstack([1.]+[0.]*(mld.nu - 1)).T
-C_T_scaling = 1.1
-C_T = C * C_T_scaling
-objective = [C, D, C_T]
+Q = np.eye(mld.nx)
+R = np.vstack([1.]+[0.]*(mld.nu - 1)).T
+Q_T_scaling = 1.1
+Q_T = Q * Q_T_scaling
+objective = [Q, R, Q_T]
 
 # terminal constraints
 F_T = np.vstack((np.eye(mld.nx), - np.eye(mld.nx)))
@@ -125,17 +125,17 @@ x0 = np.array([0., 0., 1., 0.])
 
 # solve MIQP
 # solution, leaves = controller.feedforward(x0, draw_label='test')
-solution, leaves = controller.feedforward(x0, printing_period=None)
+solution, leaves = controller.feedforward(x0, printing_period=None)[:2]
 
 # solve leaf subproblem
-solution_leaves = [controller._solve_subproblem(leaf.identifier, x0) for leaf in leaves]
+solution_leaves = [controller._solve_subproblem(leaf.identifier, x0)[0] for leaf in leaves]
 
 # generate warm start
 np.random.seed(1)
 uc0 = solution.variables['uc'][0]
 ub0 = solution.variables['ub'][0]
 e0 = np.random.randn(mld.nx) * .01
-warm_start = controller.construct_warm_start(leaves, x0, uc0, ub0, e0)
+warm_start = controller.construct_warm_start(leaves, x0, uc0, ub0, e0)[0]
 
 # next state
 u0 = np.concatenate((uc0, ub0))
@@ -216,27 +216,27 @@ def plug_in_dual_constraints(variables):
 
     # dual terminal conditions
     zero_terms = []
-    zero_terms.append(controller.C_T.T.dot(rho[T]) + lam[T])
+    zero_terms.append(controller.Q_T.T.dot(rho[T]) + lam[T])
 
     # dual dynamics time T-1
-    zero_terms.append(controller.C.T.dot(rho[T-1]) + lam[T-1] \
+    zero_terms.append(controller.Q.T.dot(rho[T-1]) + lam[T-1] \
 	                - mld.A.T.dot(lam[T]) \
 	                + controller.F_Tm1.T.dot(mu[T-1]))
 
     # dual dynamics at time t
     for t in range(T-1):
-        zero_terms.append(controller.C.T.dot(rho[t]) + lam[t] \
+        zero_terms.append(controller.Q.T.dot(rho[t]) + lam[t] \
 	                    - mld.A.T.dot(lam[t+1]) \
 	                    + mld.F.T.dot(mu[t]))
 
     # dual constraints at time T-1
-    zero_terms.append(controller.D.T.dot(sigma[T-1]) \
+    zero_terms.append(controller.R.T.dot(sigma[T-1]) \
 	                - mld.B.T.dot(lam[T]) \
 	                + controller.G_Tm1.T.dot(mu[T-1]) \
 	                + mld.V.T.dot(nu_ub[T-1] - nu_lb[T-1]))
     # dual cosntraints at time t
     for t in range(T-1):
-        zero_terms.append(controller.D.T.dot(sigma[t]) \
+        zero_terms.append(controller.R.T.dot(sigma[t]) \
 	                    - mld.B.T.dot(lam[t+1]) \
 	                    + mld.G.T.dot(mu[t]) \
 	                    + mld.V.T.dot(nu_ub[t] - nu_lb[t]))

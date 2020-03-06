@@ -225,7 +225,7 @@ class HybridModelPredictiveController(object):
 
         return np.vstack(M).T
 
-    def _solve_subproblem(self, identifier, x0, active_set):
+    def _solve_subproblem(self, identifier, x0, active_set=None):
         '''
         Solves the QP relaxation indentified by the identifier for the given
         initial state.
@@ -488,7 +488,7 @@ class HybridModelPredictiveController(object):
                     shifted_dual = DualSolution(shifted_variables, shifted_objective)
 
                 # add new node to the list for the warm start
-                # shifted_identifier = {(k[0]-1, k[1]): v for k, v in identifier.items() if k[0] > 0}
+                shifted_identifier = {(k[0]-1, k[1]): v for k, v in identifier.items() if k[0] > 0}
                 shifted_solution = SubproblemSolution(None, shifted_dual)
                 warm_start.append(Node(shifted_identifier, shifted_lb, shifted_solution))
 
