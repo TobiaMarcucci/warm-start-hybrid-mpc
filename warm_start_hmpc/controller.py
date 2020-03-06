@@ -1,15 +1,46 @@
 # external imports
-import numpy as np
-import gurobipy as grb
-from time import time
-from copy import copy, deepcopy
-from operator import le, ge, eq
 import gc
+import numpy as np
+from time import time
+from operator import le, ge, eq
 
 # internal inputs
 from warm_start_hmpc.bounded_qp import BoundedQP
 from warm_start_hmpc.subproblem_solution import SubproblemSolution, PrimalSolution, DualSolution
 from warm_start_hmpc.branch_and_bound import Node, branch_and_bound, best_first, depth_first
+
+def branch_in_time(identifier, nub):
+    '''
+    Branching heuristic search for the branch and bound algorithm.
+    Select the children nodes proceeding in chronological order.
+
+    Parameters
+    ----------
+    identifier : dict
+        Dictionary containing the values of selected binaries.
+        Pass an empty dictionary to reset the bounds of the binaries to 0 and 1.
+    nub : int
+        Number of binary inputs in the MLD system.
+
+    Returns
+    -------
+    list of dict
+        List of sub-identifier that, if merged with the identifier of the parent, give the identifier of the children.
+    '''
+
+    # idices of the last binary fixed in time
+    t = max([k[0] for k in identifier.keys()] + [0])
+    index = max([k[1]+1 for k in identifier.keys() if k[0] == t] + [0])
+
+    # try to fix one more ub at time t
+    if index < nub:
+        branches = [{(t,index): 0.}, {(t,index): 1.}]
+
+    # if everything is fixed at time t, move to time t+1
+    else:
+        branches = [{(t+1,0): 0.}, {(t+1,0): 1.}]
+
+    return branches
 
 class HybridModelPredictiveController(object):
     '''
@@ -159,8 +190,8 @@ class HybridModelPredictiveController(object):
 
         Returns
         -------
-        M : np.array
-            Matrix for the update of the mutiplier.
+        np.array
+            Matrix for the update of the mutiplier mu.
         '''
 
         # size of the linea programs
@@ -194,7 +225,7 @@ class HybridModelPredictiveController(object):
 
         return np.vstack(M).T
 
-    def _solve_subproblem(self, identifier, x0, cutoff=None, gurobi_options={}, active_set=None):
+    def _solve_subproblem(self, identifier, x0, active_set):
         '''
         Solves the QP relaxation indentified by the identifier for the given
         initial state.
@@ -205,28 +236,38 @@ class HybridModelPredictiveController(object):
             Dictionary containing the values of selected binaries.
         x0 : np.array
             Initial state of the system.
-        cutoff : float
-            Objective threshold above which the solution of the problem can be
-            terminated. (Currently not used.)
-        gurobi_options : dict
-            Options for the Gurobi QP solver.
-        active_set : list of int
-            Active
+        active_set : dict with two list of int
+            Active set to warm start the dual simplex method.
+            Has entries 'c' for the constraints and 'v' fo the variables.
+            Each element is equal to -1 if in the active set , 0 otherwise.
+            Constraints and variables are ordered as in the Gurobi methods
+            self.qp.getConstrs() and self.qp.getVars().
 
         Returns
         -------
-        solution : SubproblemSolution
-            Instace of the class which contains the solution of a subproblem.
+        SubproblemSolution
+            Solution of the subproblem.
         '''
+
+        # set bounds on binaries
+        self._set_bound_binaries(identifier)
 
         # set initial conditions
         self.qp.set_constraint_rhs('lam_0', x0)
-        self._set_bound_binaries(identifier)
 
+        # warm start the dual simplex with the given active set
+        # (must be done after _set_bound_binaries and set_constraint_rhs
+        # otherwise Gruobi clears it when modifying constraints)
+        if active_set is not None and self.qp.Params.Method == 1:
+            [c.setAttr('CBasis', active_set['c'][i]) for i, c in enumerate(self.qp.getConstrs())]
+            [v.setAttr('VBasis', active_set['v'][i]) for i, v in enumerate(self.qp.getVars())]
+        
         # run the optimization and initialize the result
-        self.qp.optimize(gurobi_options, active_set) # TODO: use cutoff, and warm start qp solve
+        self.qp.optimize()
+        solution = SubproblemSolution.from_controller(self)
+        solve_time = self.qp.Runtime
 
-        return SubproblemSolution.from_controller(self), self.qp.Runtime
+        return solution, solve_time
 
     def _set_bound_binaries(self, identifier):
         '''
@@ -283,18 +324,7 @@ class HybridModelPredictiveController(object):
 
         return ub_lb, ub_ub
 
-        # # initialize bounds on the binary inputs
-        # ub_lb = [np.zeros(self.mld.nub)] * self.T
-        # ub_ub = [np.ones(self.mld.nub)] * self.T
-
-        # # parse identifier
-        # for k, v in identifier.items():
-        #     ub_lb[k[0]][k[1]] = v
-        #     ub_ub[k[0]][k[1]] = v
-
-        # return ub_lb, ub_ub
-
-    def feedforward(self, x0, gurobi_options={}, **kwargs):
+    def feedforward(self, x0, gurobi_params={}, search_rule=best_first, branch_rule=branch_in_time, **kwargs):
         '''
         Solves the mixed integer program using the branch_and_bound function.
 
@@ -302,35 +332,68 @@ class HybridModelPredictiveController(object):
         ----------
         x0 : np.array
             Current state of the system.
+        gurobi_params : dict
+            Options for the Gurobi QP solver.
+        search_rule : function
+            Search heuristic for the branch and bound algorithm.
+        branhc_rule : function
+            Branching heuristic for the branch and bound algorithm.
 
         Returns
         -------
-        primal : PrimalSolution
+        PrimalSolution
             Primal solution associated with the incumbent node at optimality.
             None if problem is infeasible.
-        leaves : list of Node
-            Leaves of the branch and bound tree that proved optimality of the returned solution. 
+        list of Node
+            Leaves of the branch and bound tree that proved optimality of the
+            returned solution. 
+        int
+            Number of subproblems solved in the branch and bound algorithm.
+        float
+            Time spent solving QPs in GUrobi during branch and bound.
         '''
 
-        # generate a solver for the branch and bound algorithm
+        # set gurobi parameters
+        self._set_gurobi_params(gurobi_params)
+
+        # reset model to discard old solutions
+        self.qp.reset() # prints "Discarded solution information"
+
+        # solver for the branch and bound algorithm
         def solver(identifier, cutoff, extra):
-            active_set = None if extra is None else extra.active_set
-            solution, solve_time = self._solve_subproblem(identifier, x0, cutoff, gurobi_options, active_set)
-            return solution.primal.objective, solution.primal.binary_feasible, solve_time, solution
+
+            # TODO: think about consequences of using the cutoff here
+            # self.qp.Params.Cutoff = cutoff
+
+            # solve the qp
+            active_set = extra.active_set if extra is not None else None
+            solution, solve_time = self._solve_subproblem(identifier, x0, active_set)
+            objective = solution.primal.objective
+            binary_feasible = solution.primal.binary_feasible
+
+            return objective, binary_feasible, solve_time, solution
+
+        # brancher for the branch and bound algorithm
+        def brancher(parent):
+            return self._brancher(parent, branch_rule)
 
         # solve the mixed integer program using branch and bound
-        incumbent, leaves, qp_solves, solver_time = branch_and_bound(solver, best_first, self._brancher, **kwargs)
+        # TODO: search heuristic and tree exploration as params to this function
+        # TODO: more compact output for branch_and_bound function
+        incumbent, leaves, qp_solves, solver_time = branch_and_bound(solver, search_rule, brancher, **kwargs)
 
         # infeasible problem
         if incumbent is None:
-            return None, leaves, qp_solves, solver_time
+            primal = None
+            return primal, leaves, qp_solves, solver_time
 
         # feasible problem
         return incumbent.extra.primal, leaves, qp_solves, solver_time
 
-    def _brancher(self, parent):
+    def _brancher(self, parent, branch_rule):
         '''
-        Given a parent node from the branch and bound tree, generates the children nodes.
+        Given a parent node from the branch and bound tree, generates the
+        children nodes.
 
         Parameters
         ----------
@@ -339,12 +402,12 @@ class HybridModelPredictiveController(object):
 
         Returns
         -------
-        children : list of Node
+        list of Node
             List of the generated children nodes for the parent node.
         '''
 
-        # get branch dictionaries from any heuristic
-        branches = branch_in_time(parent.identifier, self.mld.nub)
+        # get branch dictionaries from any branch rule heuristic
+        branches = branch_rule(parent.identifier, self.mld.nub)
 
         # construct a node per branch
         children = []
@@ -386,8 +449,9 @@ class HybridModelPredictiveController(object):
             Nodes to initialize the branch and bound algorithm.
         '''
 
+        # disable garbace collector and start stopwatch
         gc.disable()
-        tic = time()
+        construction_time = time()
 
         # create warm start checking one leaf per time
         warm_start = []
@@ -407,32 +471,6 @@ class HybridModelPredictiveController(object):
                 pi = self._get_pi(identifier, variables, shifted_variables, x0, u0, e0)
                 shifted_objective = max(0., objective + sum(pi))
 
-                # # active set
-                # active_set = {}
-                # active_set['v'] = [0] * self.qp.NumVars
-                # active_set['c'] = [0] * self.qp.NumConstrs
-                # indices = {c.ConstrName: i for i, c in enumerate(self.qp.getConstrs())}
-
-                # # equality constraints are always active
-                # for t, lam_t in enumerate(variables['lam']):
-                #     for i in range(len(lam_t)):
-                #         active_set['c'][indices[f'lam_{t}[{i}]']] = -1
-
-                # # mld inequalities
-                # for t, mu_t in enumerate(variables['mu'][:-2]):
-                #     for i in range(len(mu_t)):
-                #         active_set['c'][indices[f'mu_{t}[{i}]']] = leaf.extra.active_set['c'][indices[f'mu_{t+1}[{i}]']]
-                # mu = shifted_variables['mu'][-2]
-                # for i, mu_i in enumerate(mu_t):
-                #     if not np.isclose(mu_i, 0):
-                #         active_set['c'][indices[f'mu_{self.T-2}[{i}]']] = -1
-
-                # # binary bounds
-                # for nu in ['nu_lb', 'nu_ub']:
-                #     for t, nu_t in enumerate(variables[nu][:-1]):
-                #         for i in range(len(nu_t)):
-                #             active_set['c'][indices[nu+f'_{t}[{i}]']] = leaf.extra.active_set['c'][indices[nu+f'_{t+1}[{i}]']]
-
                 # if was infeasible and still infeasible
                 if np.isinf(leaf.lb):
                     if shifted_objective > 0.:
@@ -450,11 +488,12 @@ class HybridModelPredictiveController(object):
                     shifted_dual = DualSolution(shifted_variables, shifted_objective)
 
                 # add new node to the list for the warm start
-                shifted_identifier = {(k[0]-1, k[1]): v for k, v in identifier.items() if k[0] > 0}
+                # shifted_identifier = {(k[0]-1, k[1]): v for k, v in identifier.items() if k[0] > 0}
                 shifted_solution = SubproblemSolution(None, shifted_dual)
                 warm_start.append(Node(shifted_identifier, shifted_lb, shifted_solution))
 
-        construction_time = time() - tic
+        # stop startwatch and renable garbace collection
+        construction_time = time() - construction_time
         gc.enable()
 
         return warm_start, construction_time
@@ -473,22 +512,11 @@ class HybridModelPredictiveController(object):
 
         Returns
         -------
-        retain : Bool
+        Bool
             True if the leaf can be reatained, Flase if it must be dropped.
         '''
 
         return all(v == ub0[k[1]] for k, v in identifier.items() if k[0]==0)
-
-        # # retain until proven otherwise
-        # retain = True
-        # for k, v in identifier.items():
-
-        #     # check if the identifier agrees with the input variable at time zero
-        #     if k[0] == 0 and not np.isclose(v, ub0[k[1]]):
-        #         retain = False
-        #         break
-
-        # return retain
 
     def _shift_dual_variables(self, variables):
         '''
@@ -501,7 +529,7 @@ class HybridModelPredictiveController(object):
             
         Returns
         -------
-        shifted_dual : DualSolution
+        DualSolution
             Dual feasible solution of the shifted problem.
         '''
 
@@ -581,72 +609,107 @@ class HybridModelPredictiveController(object):
 
         return pi
 
-    def _evaluate_dual_objective(self, identifier, variables, x0):
-        squared = lambda x : x.dot(x)
-        obj =- .25 * sum(squared(r) for r in variables['rho'])
-        obj -= .25 * sum(squared(s) for s in variables['sigma'])
-        obj -= sum(self.mld.h.dot(m) for m in variables['mu'][:-1])
-        obj -= self.h_Tm1.dot(variables['mu'][-1])
-        ub_lb, ub_ub = self._get_bound_binaries(identifier)
-        obj -= sum(ub_ub[t].dot(n) for t, n in enumerate(variables['nu_ub']))
-        obj += sum(ub_lb[t].dot(n) for t, n in enumerate(variables['nu_lb']))
-        obj -= x0.dot(variables['lam'][0])
-        return max(0, obj)
+    def feedforward_gurobi(self, x0, gurobi_params={}):
+        '''
+        Solves the mixed integer program using Gurobi.
 
-    def feedforward_gurobi(self, x0, gurobi_options={}):
+        Parameters
+        ----------
+        x0 : np.array
+            Current state of the system.
+        gurobi_params : dict
+            Options for the Gurobi QP solver.
+
+        Returns
+        -------
+        np.array
+            State trajectory (number of time steps by number of states).
+        float
+            Optimal objective value.
+        int
+            Number of subproblems solved in the branch and bound algorithm.
+        float
+            Time spent in Gurobi solving the MIQP.
+        '''
+
+        # reset model to discard old solutions
+        self.qp.reset()
 
         # set up miqp
-        self.qp.reset()
+        self._set_gurobi_params(gurobi_params)
         self._set_bound_binaries({})
         self._set_binaries_type('B')
         self.qp.set_constraint_rhs('lam_0', x0)
 
         # run the optimization
-        self.qp.optimize(gurobi_options)
-        x = [self.qp.primal_optimizer(f'x_{t}') for t in range(self.T+1)]
+        self.qp.optimize()
+
+        # unpack solution
+        x = np.vstack([self.qp.primal_optimizer(f'x_{t}') for t in range(self.T+1)])
         objective = self.qp.primal_objective()
         n_nodes = int(self.qp.NodeCount)
         solver_time = self.qp.Runtime
+
+        # reset internal qp to default
         self._set_binaries_type('C')
         self.qp.reset()
 
         return x, objective, n_nodes, solver_time
 
+    def _set_gurobi_params(self, gurobi_params):
+        '''
+        Sets the parameters in the Gurobi solver.
+
+        Parameters
+        ----------
+        gurobi_params : dict
+            Options for the Gurobi QP solver.
+        '''
+
+        # reset to default
+        self.qp.resetParams()
+
+        # changes the dafult to not print
+        self.qp.setParam('OutputFlag', 0)
+
+        # set the custom parameters
+        for param, value in gurobi_params.items():
+            self.qp.setParam(param, value)
+
     def _set_binaries_type(self, type):
-        for t in range(self.T):
-            for ub in self.qp.get_variables(f'ub_{t}'):
-                ub.VType = type
-        self.qp.update()
+        '''
+        Sets the type of the bianries in the optimziations problem.
 
-def branch_in_time(identifier, nub):
-    '''
-    Branching heuristic search for the branch and bound algorithm.
-    Select the children nodes proceeding in chronological order.
+        Parameters
+        ----------
+        type : sting
+            'C' to set the binaries to be continous (between 0 and 1), 'B' to
+            force them to assume bianry values only.
+        '''
 
-    Parameters
-    ----------
-    identifier : dict
-        Dictionary containing the values of selected binaries.
-        Pass an empty dictionary to reset the bounds of the binaries to 0 and 1.
-    nub : int
-        Number of binary inputs in the MLD system.
+        [ub.setAttr('VType', type) for t in range(self.T) for ub in self.qp.get_variables(f'ub_{t}')]
 
-    Returns
-    -------
-    branches : list of dict
-        List of sub-identifier that, if merged with the identifier of the parent, give the identifier of the children.
-    '''
+    # def _evaluate_dual_objective(self, identifier, variables, x0):
 
-    # idices of the last binary fixed in time
-    t = max([k[0] for k in identifier.keys()] + [0])
-    index = max([k[1]+1 for k in identifier.keys() if k[0] == t] + [0])
+    #     # quadratic term
+    #     rho_sigma = np.concatenate(variables['rho'] + variables['sigma'])
+    #     obj = - .25 * rho_sigma.dot(rho_sigma)
 
-    # try to fix one more ub at time t
-    if index < nub:
-        branches = [{(t,index): 0.}, {(t,index): 1.}]
+    #     # linear term
+    #     ub_lb, ub_ub = self._get_bound_binaries(identifier)
+    #     lhs = np.concatenate(
+    #         variables['mu'] +
+    #         variables['nu_ub'] +
+    #         variables['nu_lb'] +
+    #         variables['lam'][:1]
+    #         )
+    #     rhs = np.concatenate(
+    #         [self.mld.h] * (self.T-1) +
+    #         [self.h_Tm1] +
+    #         ub_ub.tolist() +
+    #         (-ub_lb).tolist() +
+    #         [x0]
+    #         )
+    #     obj -= lhs.dot(rhs)
 
-    # if everything is fixed at time t, move to time t+1
-    else:
-        branches = [{(t+1,0): 0.}, {(t+1,0): 1.}]
-
-    return branches
+    #     return max(0, obj)

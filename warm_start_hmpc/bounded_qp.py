@@ -13,9 +13,8 @@ class BoundedQP(grb.Model):
 
         super().__init__(**kwargs)
 
-        # # change some default parameters
+        # change some default parameters
         self.setParam('OutputFlag', 0)
-        # self.Params.InfUnbdInfo = 1
 
     def add_variables(self, n, **kwargs):
         '''
@@ -193,27 +192,12 @@ class BoundedQP(grb.Model):
 
         return np.array([ci.RHS for ci in self.get_constraints(name)])
 
-    # def optimize(self, cutoff=None):
-    def optimize(self, gurobi_options={}, active_set=None):
+    def optimize(self):
         '''
         Overloads the grb.optimize method.
         If the problem is infeasible, retrieves a Farkas' proof solving a linear program.
         After using this method, if the problem is infeasible, it is possible to retrive the variables FarkasDual in the gurobi constraint class.
         '''
-
-        # reset model (gurobi does not try to use the last solve to warm start)
-        self.reset() # prints "Discarded solution information"
-        self.resetParams() # prints "Reset all parameters"
-
-        # set the gurobi options
-        self.setParam('OutputFlag', 0)
-        for parameter, value in gurobi_options.items():
-            self.setParam(parameter, value)
-
-        # set the warm start for the dual simplex
-        if active_set is not None and self.Params.Method == 1:
-            [c.setAttr('CBasis', active_set['c'][i]) for i, c in enumerate(self.getConstrs())]
-            [v.setAttr('VBasis', active_set['v'][i]) for i, v in enumerate(self.getVars())]
 
         # run optimization
         super().optimize()
@@ -237,31 +221,6 @@ class BoundedQP(grb.Model):
 
             # reset quadratic objective
             self.setObjective(obj)
-
-    # def active_set_from_dual(self, dual):
-
-    #     # dictionary for the indices
-    #     indices = {c.ConstrName: i for i, c in enumerate(self.getConstrs())}
-
-    #     # initialize active set
-    #     active_set = {}
-
-    #     # initialize cbasis with all the constraints active
-    #     # this is already correct for equalities
-    #     active_set['c'] = [-1] * self.NumConstrs
-
-    #     # variables never in the basis because
-    #     # we used inequalities to enforce bounds
-    #     active_set['v'] = [0] * self.NumVars
-
-    #     # all the inequalities in the qp
-    #     for label in ['mu', 'nu_lb', 'nu_ub']:
-    #         for t, dt in enumerate(dual.variables[label]):
-    #             for i, dti in enumerate(dt):
-    #                 if np.isclose(dti, 0):
-    #                     active_set['c'][indices[label+f'_{t}[{i}]']] = 0
-
-    #     return active_set
 
     def primal_optimizer(self, name):
         '''
@@ -375,3 +334,28 @@ class BoundedQP(grb.Model):
         # if status is loaded only
         if self.status == 1:
             raise RuntimeError('Problem not solved yet.')
+
+    # def active_set_from_dual(self, dual):
+
+    #     # dictionary for the indices
+    #     indices = {c.ConstrName: i for i, c in enumerate(self.getConstrs())}
+
+    #     # initialize active set
+    #     active_set = {}
+
+    #     # initialize cbasis with all the constraints active
+    #     # this is already correct for equalities
+    #     active_set['c'] = [-1] * self.NumConstrs
+
+    #     # variables never in the basis because
+    #     # we used inequalities to enforce bounds
+    #     active_set['v'] = [0] * self.NumVars
+
+    #     # all the inequalities in the qp
+    #     for label in ['mu', 'nu_lb', 'nu_ub']:
+    #         for t, dt in enumerate(dual.variables[label]):
+    #             for i, dti in enumerate(dt):
+    #                 if np.isclose(dti, 0):
+    #                     active_set['c'][indices[label+f'_{t}[{i}]']] = 0
+
+    #     return active_set

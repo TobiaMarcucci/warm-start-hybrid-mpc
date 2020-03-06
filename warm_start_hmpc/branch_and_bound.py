@@ -12,17 +12,21 @@ class Node(object):
     def __init__(self, identifier, lb=-np.inf, extra=None):
         '''
         A node is uniquely identified by its identifier.
-        It is required to provide a lower bound on the objective of the node, this can also be -np.inf.
-        The attirbute extra can contain any info necessary to determine the lower bound, and any extra data we want to store in the node.
+        It is required to provide a lower bound on the objective of the node,
+        this can also be -np.inf.
+        The attirbute extra can contain any info necessary to determine the
+        lower bound, and any extra data we want to store in the node.
 
         Parameters
         ----------
         identifier : dict
-            Identifier of the node: union of the identifier of its partent and the branch dict.
+            Identifier of the node: union of the identifier of its partent and
+            the branch dict.
         lb : float or +-np.inf
-            Lower bound on the optimal value of the node (useful in case of warm start).
-        extra : unspecified
-            extra data to be stored in the node.
+            Lower bound on the optimal value of the node (useful in case of warm
+            start).
+        extra : dict
+            Extra data to be stored in the node.
         '''
 
         self.identifier = identifier
