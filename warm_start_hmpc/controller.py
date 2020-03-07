@@ -314,32 +314,6 @@ class HybridModelPredictiveController(object):
             Upper bound imposed by the identifier on the binary inputs in the problem.
         '''
 
-        # tic = time()
-        # zeros = tuple(map(list, zip(*[k for k, v in identifier.items() if v==0])))
-        # ones = tuple(map(list, zip(*[k for k, v in identifier.items() if v==1])))
-        # t1 = time()-tic
-        # ub_lb = np.zeros((self.T, self.mld.nub))
-        # ub_ub = np.ones((self.T, self.mld.nub))
-        # t2 = time()-tic
-        # ub_lb[ones] = 1
-        # ub_ub[zeros] = 0
-        # t3 = time()-tic
-        # print(t1, t2, t3)
-        # print('\n')
-
-
-        # tic = time()
-        # indices = tuple(map(list, zip(*identifier.keys())))
-        # values = tuple(identifier.values())
-        # t1 = time()-tic
-        # ub_lb = np.zeros((self.T, self.mld.nub))
-        # ub_ub = np.ones((self.T, self.mld.nub))
-        # t2 = time()-tic
-        # ub_lb[indices] = values
-        # ub_ub[indices] = values
-        # t3 = time()-tic
-        # print(t1/t3, t2/t3, 1)
-        # print('\n')
 
         # initialize bounds on the binary inputs
         ub_lb = np.zeros((self.T, self.mld.nub))
@@ -349,9 +323,6 @@ class HybridModelPredictiveController(object):
         for k, v in identifier.items():
             ub_lb[k] = v
             ub_ub[k] = v
-
-        # print(np.linalg.norm(ub_lb - ub_lb_sp))
-        # print(np.linalg.norm(ub_ub - ub_ub_sp))
 
         return ub_lb, ub_ub
 
@@ -457,6 +428,70 @@ class HybridModelPredictiveController(object):
 
         return children
 
+    def _construct_warm_start_interstep(self, leaves, x0, uc0, ub0):
+        '''
+        All the computations to construct the warm start that can be done in
+        between sampling times. This are separated from the runtime operations
+        to facilitate the mesuring of the time spent in the latter. 
+
+        Parameters
+        ----------
+        leaves : list of Node
+            Leaves of the branch and bound tree that proved optimality of the
+            previous solution.
+        x0 : np.array
+            Initial state of the system for the problem solved at the last time
+            step.
+        uc0 : np.array
+            Value of the continuous inputs injected in the system at the last
+            time step.
+        ub0 : np.array
+            Value of the bianry inputs injected in the system at the last time
+            step.
+
+        Returns
+        -------
+        list of Node
+            Nodes to initialize the branch and bound algorithm. These are then
+            modified in the method construct_warm_start when the model error
+            is known.
+        '''
+
+        # gather inputs in a single vector
+        u0 = np.concatenate((uc0, ub0))
+
+        # create warm start checking one leaf per time
+        warm_start = []
+        
+        for leaf in leaves:
+
+            # if the identifier of the leaf does not agree with ub0 drop the leaf
+            if self._retain_leaf(leaf.identifier, ub0):
+
+                # shift leaf identifier and dual variables one step backwards in time
+                shifted_identifier = {(k[0]-1, k[1]): v for k, v in leaf.identifier.items() if k[0] > 0}
+                shifted_variables = self._shift_dual_variables(leaf.extra.dual.variables)
+
+                # construct feasible solution for the warm start node
+                pi_sum = self._pi_sum(
+                    leaf.identifier,
+                    leaf.extra.dual.variables,
+                    shifted_variables,
+                    x0,
+                    u0
+                    )
+                shifted_objective = leaf.extra.dual.objective + pi_sum
+
+                # initialize dual solution for the new nodes
+                # to be modified at runtime once we know the value of e0
+                shifted_dual = DualSolution(shifted_variables, shifted_objective)
+
+                # add primal-dual solution to the warm start
+                shifted_solution = SubproblemSolution(None, shifted_dual)
+                warm_start.append(Node(shifted_identifier, leaf.lb, shifted_solution))
+
+        return warm_start
+
     def construct_warm_start(self, leaves, x0, uc0, ub0, e0):
         '''
         Generates the warm start for the MIQP at the next time step.
@@ -464,70 +499,109 @@ class HybridModelPredictiveController(object):
         Parameters
         ----------
         leaves : list of Node
-            Leaves of the branch and bound tree that proved optimality of the previous solution.
+            Leaves of the branch and bound tree that proved optimality of the
+            previous solution.
         x0 : np.array
-            Initial state of the system for the problem solved at the last time step.
+            Initial state of the system for the problem solved at the last time
+            step.
         uc0 : np.array
-            Value of the continuous inputs injected in the system at the last time step.
+            Value of the continuous inputs injected in the system at the last
+            time step.
         ub0 : np.array
-            Value of the bianry inputs injected in the system at the last time step.
+            Value of the bianry inputs injected in the system at the last time
+            step.
         e0 : np.array
             Modeling error e0 = x1 - A x0 - B u0 at the last time step.
 
         Returns
         -------
-        warm_start : list of Node
+        list of Node
             Nodes to initialize the branch and bound algorithm.
+        float
+            Runtime part of the of the contruction time need to synthesize the
+            warm start.
         '''
 
-        # disable garbace collector and start stopwatch
+        # retrieve part of warm start that has been constructed within the
+        # sampling time
+        warm_start = self._construct_warm_start_interstep(leaves, x0, uc0, ub0)
+
+        # disable garbage collector and start stopwatch
         gc.disable()
         construction_time = time()
 
-        # create warm start checking one leaf per time
-        warm_start = []
-        u0 = np.concatenate((uc0, ub0))
-        for leaf in leaves:
+        for leaf in warm_start:
 
-            # shortcuts
-            identifier = leaf.identifier
-            variables = leaf.extra.dual.variables
-            objective = leaf.extra.dual.objective
+            # update objective with pi3
+            pi3 = - leaf.extra.dual.variables['lam'][0].dot(e0)
+            leaf.extra.dual.objective += pi3
+            leaf.extra.dual.objective = max(leaf.extra.dual.objective, 0)
 
-            # if the identifier of the leaf does not agree with ub0 drop the leaf
-            if self._retain_leaf(identifier, ub0):
+            # if the problem is feasible set the lower bound to the cost of the
+            # dual solution updated using pi3
+            if not np.isinf(leaf.lb):
+                leaf.lb = leaf.extra.dual.objective
 
-                # construct feasible solution for the warm start node
-                shifted_variables = self._shift_dual_variables(variables)
-                pi = self._get_pi(identifier, variables, shifted_variables, x0, u0, e0)
-                shifted_objective = max(0., objective + sum(pi))
+            # if it was infeasible but now could be feasible se the lower bound
+            # to the trivial value of zero
+            else:
+                if leaf.extra.dual.objective <= 0.:
+                    leaf.lb = 0.
+                    leaf.extra.dual = None
 
-                # if was infeasible and still infeasible
-                if np.isinf(leaf.lb):
-                    if shifted_objective > 0.:
-                        shifted_lb = np.inf
-                        shifted_dual = DualSolution(shifted_variables, shifted_objective)
-
-                    # if was infeasible and now could be feasible
-                    else:
-                        shifted_lb = 0.
-                        shifted_dual = None
-
-                # if it was feasible
-                else:
-                    shifted_lb = shifted_objective
-                    shifted_dual = DualSolution(shifted_variables, shifted_objective)
-
-                # add new node to the list for the warm start
-                shifted_identifier = {(k[0]-1, k[1]): v for k, v in identifier.items() if k[0] > 0}
-                shifted_solution = SubproblemSolution(None, shifted_dual)
-                warm_start.append(Node(shifted_identifier, shifted_lb, shifted_solution))
-
-        # stop startwatch and renable garbace collection
+        # stop startwatch and renable garbage collection
         construction_time = time() - construction_time
-        gc.enable()
 
         return warm_start, construction_time
+
+        # # disable garbage collector and start stopwatch
+        # gc.disable()
+        # construction_time = time()
+
+        # # create warm start checking one leaf per time
+        # warm_start = []
+        # u0 = np.concatenate((uc0, ub0))
+        # for leaf in leaves:
+
+        #     # shortcuts
+        #     identifier = leaf.identifier
+        #     variables = leaf.extra.dual.variables
+        #     objective = leaf.extra.dual.objective
+
+        #     # if the identifier of the leaf does not agree with ub0 drop the leaf
+        #     if self._retain_leaf(identifier, ub0):
+
+        #         # construct feasible solution for the warm start node
+        #         shifted_variables = self._shift_dual_variables(variables)
+        #         pi = self._pi_sum(identifier, variables, shifted_variables, x0, u0, e0)
+        #         shifted_objective = max(0., objective + sum(pi))
+
+        #         # if was infeasible and still infeasible
+        #         if np.isinf(leaf.lb):
+        #             if shifted_objective > 0.:
+        #                 shifted_lb = np.inf
+        #                 shifted_dual = DualSolution(shifted_variables, shifted_objective)
+
+        #             # if was infeasible and now could be feasible
+        #             else:
+        #                 shifted_lb = 0.
+        #                 shifted_dual = None
+
+        #         # if it was feasible
+        #         else:
+        #             shifted_lb = shifted_objective
+        #             shifted_dual = DualSolution(shifted_variables, shifted_objective)
+
+        #         # add new node to the list for the warm start
+        #         shifted_identifier = {(k[0]-1, k[1]): v for k, v in identifier.items() if k[0] > 0}
+        #         shifted_solution = SubproblemSolution(None, shifted_dual)
+        #         warm_start.append(Node(shifted_identifier, shifted_lb, shifted_solution))
+
+        # # stop startwatch and renable garbage collection
+        # construction_time = time() - construction_time
+        # gc.enable()
+
+        # return warm_start, construction_time
 
     @staticmethod
     def _retain_leaf(identifier, ub0):
@@ -582,9 +656,10 @@ class HybridModelPredictiveController(object):
 
         return shifted_variables
 
-    def _get_pi(self, identifier, variables, shifted_variables, x0, u0, e0):
+    def _pi_sum(self, identifier, variables, shifted_variables, x0, u0):
         '''
-        Evaluates the terms pi3, pi5, pi7 needed to check if a subproblem is still infeasible after shifting.
+        Returns the sum of the pi terms, excluded pi4 that can only be computed
+        at runtime.
 
         Parameters
         ----------
@@ -598,25 +673,24 @@ class HybridModelPredictiveController(object):
             Initial state of the system.
         u0 : np.array
             Input injected in the system.
-        e0 : np.array
-            Modeling error e0 = x1 - A x0 - B u0 at the last time step.
 
         Returns
         -------
-        pi : list of float
+        list of float
             Value of the terms that represent the difference in the objective of two consecutive problem.
             (See paper for the meaning of these.)
         '''
 
+        # tic = time()
+
         # stage cost
         squared = lambda x : x.dot(x)
-        pi = np.zeros(6)
         Qx0 = self.Q.dot(x0)
         Ru0 = self.R.dot(u0)
-        pi[0] = - squared(Qx0) - squared(Ru0)
+        pi_sum = - squared(Qx0) - squared(Ru0)
 
         # suboptimality cost
-        pi[1] = squared(.5*variables['rho'][0] - Qx0) + squared(.5*variables['sigma'][0] - Ru0)
+        pi_sum += squared(.5*variables['rho'][0] - Qx0) + squared(.5*variables['sigma'][0] - Ru0)
 
         # complementarity slackness
         ub_lb, ub_ub = self._get_bound_binaries(identifier)
@@ -625,20 +699,17 @@ class HybridModelPredictiveController(object):
             'nu_lb': ub_lb[0] - self.mld.V.dot(u0),
             'nu_ub': self.mld.V.dot(u0) - ub_ub[0]
         }
-        pi[2] = - sum(residual.dot(variables[k][0]) for k, residual in residuals.items())
-
-        # model error
-        pi[3] = - variables['lam'][1].dot(e0)
+        pi_sum -=  sum(residual.dot(variables[k][0]) for k, residual in residuals.items())
 
         # terminal cost
-        pi[4] = .25 * squared(variables['rho'][self.T]) - \
-                .25 * squared(shifted_variables['rho'][self.T-1])
+        pi_sum += .25 * squared(variables['rho'][self.T]) - \
+                  .25 * squared(shifted_variables['rho'][self.T-1])
 
         # terminal constraint
-        pi[5] = self.h_Tm1.dot(variables['mu'][self.T-1]) - \
-                self.mld.h.dot(shifted_variables['mu'][self.T-2])
+        pi_sum += self.h_Tm1.dot(variables['mu'][self.T-1]) - \
+                  self.mld.h.dot(shifted_variables['mu'][self.T-2])
 
-        return pi
+        return pi_sum
 
     def feedforward_gurobi(self, x0, gurobi_params={}):
         '''

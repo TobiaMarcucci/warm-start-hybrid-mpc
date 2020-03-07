@@ -15,20 +15,20 @@ def number_success(trajectories, horizon):
 x0 = np.array([0., 0., 1., 0.])
 
 # error standard deviation
-e_sd = 0.01# 0.001, 0.003, 0.01
+e_sd = 0.# 0.001, 0.003, 0.01
 
 # legth of each simulation
 N_sim = 50
 
 # number of simulations
-N_samples = 100
+N_samples = 1
 
 # initial counter for the simulations
 # if there are already stored data this allows to continue
 # the collection from where it stopped last time
 # set this value to the number of trajectories you already have
 # included unsuccesful ones
-i0 = 100
+i0 = 0
 
 # list of the data to be collected
 nodes_keys = ['cs', 'ws', 'len_ws', 'grb', 'grb_fair']
