@@ -12,23 +12,28 @@ class Node(object):
     def __init__(self, identifier, lb=-np.inf, extra=None):
         '''
         A node is uniquely identified by its identifier.
-        It is required to provide a lower bound on the objective of the node, this can also be -np.inf.
-        The attirbute extra can contain any info necessary to determine the lower bound, and any extra data we want to store in the node.
+        It is required to provide a lower bound on the objective of the node,
+        this can also be -np.inf.
+        The attirbute extra can contain any info necessary to determine the
+        lower bound, and any extra data we want to store in the node.
 
         Parameters
         ----------
         identifier : dict
-            Identifier of the node: union of the identifier of its partent and the branch dict.
+            Identifier of the node: union of the identifier of its partent and
+            the branch dict.
         lb : float or +-np.inf
-            Lower bound on the optimal value of the node (useful in case of warm start).
-        extra : unspecified
-            extra data to be stored in the node.
+            Lower bound on the optimal value of the node (useful in case of warm
+            start).
+        extra : dict
+            Extra data to be stored in the node.
         '''
 
         self.identifier = identifier
         self.lb = lb
         self.extra = extra
         self.binary_feasible = None
+        self.solve_time = None
 
     def solve(self, solver, cutoff=None):
         '''
@@ -47,7 +52,7 @@ class Node(object):
         '''
 
         # solve subproblem (overwrites some of the attributes)
-        [self.lb, self.binary_feasible, self.extra] = solver(self.identifier, cutoff)
+        [self.lb, self.binary_feasible, self.solve_time, self.extra] = solver(self.identifier, cutoff, self.extra)
 
 class Printer(object):
     '''
@@ -446,6 +451,7 @@ def branch_and_bound(
     incumbent = None
     leaves = [Node({})] if warm_start is None else warm_start
     solves = 0
+    solver_time = 0
 
     # printing and drawing
     printer = Printer(printing_period)
@@ -465,6 +471,7 @@ def branch_and_bound(
         cutoff = ub - tol
         working_node.solve(solver, cutoff)
         solves += 1
+        solver_time += working_node.solve_time
 
         # pruning
         if working_node.lb >= cutoff:
@@ -489,7 +496,7 @@ def branch_and_bound(
     printer.finalize()
     drawer.finalize(incumbent, leaves)
 
-    return incumbent, leaves, solves
+    return incumbent, leaves, solves, solver_time
 
 def breadth_first(candidate_nodes):
     '''

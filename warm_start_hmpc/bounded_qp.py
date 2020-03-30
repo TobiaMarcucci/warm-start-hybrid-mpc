@@ -14,8 +14,7 @@ class BoundedQP(grb.Model):
         super().__init__(**kwargs)
 
         # change some default parameters
-        self.Params.OutputFlag = 0
-        self.Params.InfUnbdInfo = 1
+        self.setParam('OutputFlag', 0)
 
     def add_variables(self, n, **kwargs):
         '''
@@ -29,7 +28,7 @@ class BoundedQP(grb.Model):
 
         Returns
         -------
-        x : np.array
+        np.array
             Numpy array that collects the new optimization variables.
         '''
 
@@ -62,27 +61,27 @@ class BoundedQP(grb.Model):
 
         Returns
         -------
-        x : np.array
+        np.array
             Numpy array that collects the asked variables.
             Returns an empty array if the variables is not defined.
         '''
 
         # initilize vector of variables
-        x = np.array([])
+        x = []
 
         # there cannnot be more x than optimization variables
         for i in range(self.NumVars):
 
             # get new element and append
-            xi = self.getVarByName(name+'[%d]'%i)
+            xi = self.getVarByName(f'{name}[{i}]')
             if xi:
-                x = np.append(x, xi)
+                x.append(xi)
 
             # if no more elements are available break the for loop
             else:
                 break
 
-        return x
+        return np.array(x)
 
     def add_constraints(self, x, op, y, **kwargs):
         '''
@@ -100,7 +99,7 @@ class BoundedQP(grb.Model):
 
         Returns
         -------
-        c : np.array of gurobi.Constr
+        np.array of gurobi.Constr
             Numpy array that collects the new constraints.
         '''
 
@@ -109,7 +108,7 @@ class BoundedQP(grb.Model):
             raise ValueError('Left- and right-hand side must have the same size.')
 
         # ensure that lhs is not an array of floats
-        # otherwise gurobi the behavior of gurobi is unpredictable
+        # otherwise the behavior of gurobi is unpredictable
         if all(isinstance(xi, float) for xi in x):
             raise ValueError('Left-hand side cannot be an array of floats.')
 
@@ -136,26 +135,26 @@ class BoundedQP(grb.Model):
 
         Returns
         -------
-        c : np.array
+        np.array
             Numpy array that collects the asked constraints.
         '''
 
         # initilize vector of constraints
-        c = np.array([])
+        c = []
 
         # there cannnot be more c than constraints in the problem
         for i in range(self.NumConstrs):
 
             # get new constraint and append
-            ci = self.getConstrByName(name+'[%d]'%i)
+            ci = self.getConstrByName(f'{name}[{i}]')
             if ci:
-                c = np.append(c, ci)
+                c.append(ci)
 
             # if no more constraints are available break the for loop
             else:
                 break
 
-        return c
+        return np.array(c)
 
     def set_constraint_rhs(self, name, rhs):
         '''
@@ -166,7 +165,7 @@ class BoundedQP(grb.Model):
         name : string
             Name of the family of constraints of wich we want to reset the rhs.
         rhs : np.array
-            New value of the right-hand side.
+            New value of the constraint right-hand side.
         '''
 
         # check input size
@@ -189,24 +188,27 @@ class BoundedQP(grb.Model):
         ----------
         name : string
             Name of the family of constraints of wich we want to get the rhs.
+
+        Returns
+        -------
+        np.array
+            Current value of the constraint right-hand side.
         '''
 
         return np.array([ci.RHS for ci in self.get_constraints(name)])
 
     def optimize(self):
         '''
-        Overloads the grb.Model method.
+        Overloads the grb.optimize method.
         If the problem is infeasible, retrieves a Farkas' proof solving a linear program.
         After using this method, if the problem is infeasible, it is possible to retrive the variables FarkasDual in the gurobi constraint class.
         '''
 
-        # reset model (gurobi does not try to use the last solve to warm start)
-        self.reset()
-
-        # run the optimization
+        # run optimization
         super().optimize()
 
         # if not optimal then infeasible, do Farkas proof
+        # if not self.status in [2, 6]:
         if self.status != 2:
         
             # copy objective
@@ -215,6 +217,7 @@ class BoundedQP(grb.Model):
             # rerun the optimization with linear objective
             # (only linear accepted for farkas proof)
             self.setObjective(0.)
+            self.setParam('InfUnbdInfo', 1)
             super().optimize()
 
             # ensure new problem is actually infeasible
@@ -239,14 +242,14 @@ class BoundedQP(grb.Model):
 
         Returns
         -------
-        np.array
+        np.array or None
             Array that collects the optimal values of the primal variables.
             Returns the primal optimizer if the problem is solved to optimality.
             Returns None if infeasible.
         '''
 
         # if optimal, return optimizer
-        self._throw_if_not_solved()
+        self._raise_if_not_solved()
         if self.status == 2:
             return np.array([xi.x for xi in self.get_variables(name)])
 
@@ -277,7 +280,7 @@ class BoundedQP(grb.Model):
         '''
 
         # if optimal, return optimizer
-        self._throw_if_not_solved()
+        self._raise_if_not_solved()
         if self.status == 2:
             return - np.array([ci.Pi for ci in self.get_constraints(name)])
 
@@ -294,12 +297,12 @@ class BoundedQP(grb.Model):
 
         Returns
         -------
-        float or None
+        float or np.inf
             Primal objective.
         '''
 
         # if optimal, return optimal value
-        self._throw_if_not_solved()
+        self._raise_if_not_solved()
         if self.status == 2:
             return self.objVal
 
@@ -320,7 +323,7 @@ class BoundedQP(grb.Model):
         '''
         
         # if optimal, return optimal value
-        self._throw_if_not_solved()
+        self._raise_if_not_solved()
         if self.status == 2:
             return self.objVal
 
@@ -328,7 +331,7 @@ class BoundedQP(grb.Model):
         else:
             return - sum(c.RHS*c.FarkasDual for c in self.getConstrs())
 
-    def _throw_if_not_solved(self):
+    def _raise_if_not_solved(self):
         '''
         Raises an RuntimeError error if the problem has not been solved yet.
         '''
@@ -336,3 +339,28 @@ class BoundedQP(grb.Model):
         # if status is loaded only
         if self.status == 1:
             raise RuntimeError('Problem not solved yet.')
+
+    # def active_set_from_dual(self, dual):
+
+    #     # dictionary for the indices
+    #     indices = {c.ConstrName: i for i, c in enumerate(self.getConstrs())}
+
+    #     # initialize active set
+    #     active_set = {}
+
+    #     # initialize cbasis with all the constraints active
+    #     # this is already correct for equalities
+    #     active_set['c'] = [-1] * self.NumConstrs
+
+    #     # variables never in the basis because
+    #     # we used inequalities to enforce bounds
+    #     active_set['v'] = [0] * self.NumVars
+
+    #     # all the inequalities in the qp
+    #     for label in ['mu', 'nu_lb', 'nu_ub']:
+    #         for t, dt in enumerate(dual.variables[label]):
+    #             for i, dti in enumerate(dt):
+    #                 if np.isclose(dti, 0):
+    #                     active_set['c'][indices[label+f'_{t}[{i}]']] = 0
+
+    #     return active_set
