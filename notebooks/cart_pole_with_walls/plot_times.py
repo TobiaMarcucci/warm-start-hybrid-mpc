@@ -35,9 +35,9 @@ for e in e_sd:
     times_ws_constr[e] = [t for t in times_ws_constr[e] if len(t) == N_sim-1]
     times_grb_fair[e] = [t for t in times_grb_fair[e] if len(t) == N_sim]
 
-# reformat y-axis ticks
-def tick_format(value, tick_number):
-    return r'$10^{%d} \ \mathrm{s}$' % int(log10(value))
+# # reformat y-axis ticks
+# def tick_format(value, tick_number):
+#     return r'$10^{%d} \ \mathrm{s}$' % int(log10(value))
 
 # set latex params
 plt.rc('text', usetex=True)
@@ -49,7 +49,7 @@ fig = plt.figure(figsize=(6, 10))
 gridspec.GridSpec(20, 1)
 
 # sizes of the subplots
-heights = [2., 2., 2., 2.]
+heights = [3., 3., 3., 3.]
 rowspans = [4, 4, 4, 4]
 xticks = range(0, N_sim + 1, 5)
 yticks = [0.0001, 0.001, 0.01, 0.1, 1.]
@@ -67,7 +67,8 @@ plt.xticks(xticks, ['']*len(xticks))
 plt.yscale('log')
 plt.yticks(yticks)
 plt.ylim(1e-4, heights[0])
-plt.gca().yaxis.set_major_formatter(plt.FuncFormatter(tick_format))
+plt.ylabel(r'(s)')
+# plt.gca().yaxis.set_major_formatter(plt.FuncFormatter(tick_format))
 
 # with disturbances
 for i, e in enumerate(e_sd[1:]):
@@ -94,7 +95,8 @@ for i, e in enumerate(e_sd[1:]):
         plt.title(r'$\sigma_i = 10^{%.0f} \bar x_i$'%exp)
     else:
         plt.title(r'$\sigma_i = %.0f \cdot 10^{%.0f} \bar x_i$'%(coef,exp))
-    plt.gca().yaxis.set_major_formatter(plt.FuncFormatter(tick_format))
+    # plt.gca().yaxis.set_major_formatter(plt.FuncFormatter(tick_format))
+    plt.ylabel(r'(s)')
     
 # x axis common to all subplots
 plt.xlabel(r'Time step $\tau$')

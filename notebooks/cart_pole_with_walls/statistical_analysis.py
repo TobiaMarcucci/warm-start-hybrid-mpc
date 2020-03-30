@@ -15,13 +15,16 @@ def number_success(trajectories, horizon):
 x0 = np.array([0., 0., 1., 0.])
 
 # error standard deviation
-e_sd = 0.# 0.001, 0.003, 0.01
+e_sd = 0.01 # 0, 0.001, 0.003, 0.01
 
 # legth of each simulation
 N_sim = 50
 
 # number of simulations
-N_samples = 1
+if e_sd == 0:
+    N_samples = 1
+else:
+    N_samples = 100
 
 # initial counter for the simulations
 # if there are already stored data this allows to continue
@@ -32,7 +35,7 @@ i0 = 0
 
 # list of the data to be collected
 nodes_keys = ['cs', 'ws', 'len_ws', 'grb', 'grb_fair']
-times_keys = ['cs', 'ws', 'ws_constr', 'grb', 'grb_fair']
+times_keys = ['cs', 'ws', 'ws_constr', 'ws_interstep', 'grb', 'grb_fair']
 
 # initialize nodes, times, and errors to empty lists if
 # we do not want to load previous data
@@ -86,6 +89,7 @@ with open('data/solve_log_sd_{:.3f}.log'.format(e_sd), open_mode) as f:
         # simulate for N_sim steps
         x_sim = [x0]
         ws = None
+        ub_guess = None
         for t in range(N_sim):
             print((i,t), end='\r')
             f.write('Time step %d '%t)
@@ -126,10 +130,12 @@ with open('data/solve_log_sd_{:.3f}.log'.format(e_sd), open_mode) as f:
             
             # solve with gurobi
             try:
-                x_grb, cost_grb, nodes_grb, time_grb = controller.feedforward_gurobi(
+                variables_grb, cost_grb, nodes_grb, time_grb = controller.feedforward_gurobi(
                     x_sim[-1],
-                    {'OutputFlag': 0, 'MIPGap': 0}
+                    {'OutputFlag': 0, 'MIPGap': 0},
+                    ub_guess
                 )
+                ub_guess = controller.shift_binary_solution(variables_grb['ub'])
             except:
                 simulation_success = False
                 f.write('\nUnseccessful simulation, Gurobi broke!')
@@ -142,7 +148,7 @@ with open('data/solve_log_sd_{:.3f}.log'.format(e_sd), open_mode) as f:
             # solve with gurobi fair
             # gurobi parameters are set to be "fair" with our branch and bound
             try:
-                x_grb_fair, cost_grb_fair, nodes_grb_fair, time_grb_fair = controller.feedforward_gurobi(
+                variables_grb_fair, cost_grb_fair, nodes_grb_fair, time_grb_fair = controller.feedforward_gurobi(
                     x_sim[-1],
                     {'OutputFlag': 0, 'MIPGap': 0, 'Presolve': 0, 'Heuristics': 0, 'Threads': 1}
                 )
@@ -171,7 +177,7 @@ with open('data/solve_log_sd_{:.3f}.log'.format(e_sd), open_mode) as f:
             errors_i.append(e_t)
 
             # generate warm start
-            ws, time_ws_constr = controller.construct_warm_start(
+            ws, time_ws_constr, time_ws_interstep = controller.construct_warm_start(
                 leaves_ws,
                 solution_ws.variables['x'][0],
                 solution_cs.variables['uc'][0],
@@ -180,7 +186,8 @@ with open('data/solve_log_sd_{:.3f}.log'.format(e_sd), open_mode) as f:
             )
             nodes_i['len_ws'].append(len(ws))
             times_i['ws_constr'].append(time_ws_constr)
-            f.write('(ws info: {}, {:.3f}) '.format(len(ws), time_ws_constr))
+            times_i['ws_interstep'].append(time_ws_interstep)
+            f.write('(ws info: {}, {:.3f}, {:.3f}) '.format(len(ws), time_ws_constr, time_ws_interstep))
             f.flush()
 
             # next state

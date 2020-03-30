@@ -460,6 +460,10 @@ class HybridModelPredictiveController(object):
         # gather inputs in a single vector
         u0 = np.concatenate((uc0, ub0))
 
+        # disable garbage collector and start stopwatch
+        gc.disable()
+        construction_time = time()
+
         # create warm start checking one leaf per time
         warm_start = []
         
@@ -490,7 +494,11 @@ class HybridModelPredictiveController(object):
                 shifted_solution = SubproblemSolution(None, shifted_dual)
                 warm_start.append(Node(shifted_identifier, leaf.lb, shifted_solution))
 
-        return warm_start
+        # stop startwatch and renable garbage collection
+        construction_time = time() - construction_time
+        gc.enable()
+
+        return warm_start, construction_time
 
     def construct_warm_start(self, leaves, x0, uc0, ub0, e0):
         '''
@@ -524,7 +532,7 @@ class HybridModelPredictiveController(object):
 
         # retrieve part of warm start that has been constructed within the
         # sampling time
-        warm_start = self._construct_warm_start_interstep(leaves, x0, uc0, ub0)
+        warm_start, interstep_time = self._construct_warm_start_interstep(leaves, x0, uc0, ub0)
 
         # disable garbage collector and start stopwatch
         gc.disable()
@@ -551,8 +559,9 @@ class HybridModelPredictiveController(object):
 
         # stop startwatch and renable garbage collection
         construction_time = time() - construction_time
+        gc.enable()
 
-        return warm_start, construction_time
+        return warm_start, construction_time, interstep_time
 
         # # disable garbage collector and start stopwatch
         # gc.disable()
@@ -711,7 +720,7 @@ class HybridModelPredictiveController(object):
 
         return pi_sum
 
-    def feedforward_gurobi(self, x0, gurobi_params={}):
+    def feedforward_gurobi(self, x0, gurobi_params={}, ub_guess=None):
         '''
         Solves the mixed integer program using Gurobi.
 
@@ -724,8 +733,8 @@ class HybridModelPredictiveController(object):
 
         Returns
         -------
-        np.array
-            State trajectory (number of time steps by number of states).
+        dict of np.array
+            Dictionary with optimal input sequence and state trajectory.
         float
             Optimal objective value.
         int
@@ -743,11 +752,19 @@ class HybridModelPredictiveController(object):
         self._set_binaries_type('B')
         self.qp.set_constraint_rhs('lam_0', x0)
 
+        # set initial guess for the binaries
+        if ub_guess is not None:
+            self._set_guess_binaries(ub_guess)
+
         # run the optimization
         self.qp.optimize()
 
         # unpack solution
-        x = np.vstack([self.qp.primal_optimizer(f'x_{t}') for t in range(self.T+1)])
+        variables = {}
+        variables['x'] = np.vstack([self.qp.primal_optimizer(f'x_{t}') for t in range(self.T+1)])
+        for k in ['uc', 'ub']:
+            variables[k] = np.vstack([self.qp.primal_optimizer(f'{k}_{t}') for t in range(self.T)])
+
         objective = self.qp.primal_objective()
         n_nodes = int(self.qp.NodeCount)
         solver_time = self.qp.Runtime
@@ -756,7 +773,7 @@ class HybridModelPredictiveController(object):
         self._set_binaries_type('C')
         self.qp.reset()
 
-        return x, objective, n_nodes, solver_time
+        return variables, objective, n_nodes, solver_time
 
     def _set_gurobi_params(self, gurobi_params):
         '''
@@ -790,6 +807,15 @@ class HybridModelPredictiveController(object):
         '''
 
         [ub.setAttr('VType', type) for t in range(self.T) for ub in self.qp.get_variables(f'ub_{t}')]
+
+    def shift_binary_solution(self, ub):
+        return np.vstack((ub[1:], np.zeros(self.mld.nub)))
+
+    def _set_guess_binaries(self, ub_guess):
+
+        for t in range(self.T):
+            for i, ub in enumerate(self.qp.get_variables(f'ub_{t}')):
+                ub.setAttr('Start', ub_guess[t, i])
 
     # def _evaluate_dual_objective(self, identifier, variables, x0):
 
